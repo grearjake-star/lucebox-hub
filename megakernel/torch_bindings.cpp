@@ -507,6 +507,7 @@ extern "C" void launch_prefill_bf16_mega(
     void *hidden, void *residual, void *normalized,
     void *proj_buf, void *proj_buf2, void *attn_buf, void *mlp_buf,
     void *dn_out_buf, void *beta_buf, void *alpha_buf,
+    void *fa_q_tail, int q_tail_len,
     void *final_normed, void *hidden_bf16_out,
     void *lm_bmv, void *lm_bmi,
     cudaStream_t stream);
@@ -536,6 +537,7 @@ void prefill_bf16_mega(
         proj_buf.data_ptr(), proj_buf2.data_ptr(),
         attn_buf.data_ptr(), mlp_buf.data_ptr(),
         dn_out_buf.data_ptr(), beta_buf.data_ptr(), alpha_buf.data_ptr(),
+        nullptr, 0,
         final_normed.data_ptr(), hidden_bf16_out.data_ptr(),
         lm_bmv.data_ptr(), lm_bmi.data_ptr(),
         c10::cuda::getCurrentCUDAStream().stream());

@@ -50,6 +50,7 @@ constexpr int FA_Q_SIZE = FA_Q_HEADS * FA_HEAD_DIM;
 constexpr int FA_QPROJ_SIZE = FA_Q_SIZE * 2;
 constexpr int FA_KV_SIZE = FA_KV_HEADS * FA_HEAD_DIM;
 constexpr int FA_ROT_DIM = 64;
+constexpr int Q_TAIL_CAPACITY = 8;
 constexpr float FA_ROPE_THETA = 10000000.0f;
 
 constexpr int DN_HEADS = 16;
@@ -678,6 +679,28 @@ __device__ void phase_qk_norm_rope(
     }
 }
 
+__device__ void phase_capture_fa_q_tail(
+    const __nv_bfloat16 *q,
+    __nv_bfloat16 *q_tail,
+    int fa_layer_idx,
+    int S,
+    int tail_len)
+{
+    if (!q_tail || tail_len <= 0 || tail_len > Q_TAIL_CAPACITY || tail_len > S) return;
+    int total = tail_len * FA_Q_HEADS * FA_HEAD_DIM;
+    int stride = gridDim.x * blockDim.x;
+    for (int idx = blockIdx.x * blockDim.x + threadIdx.x; idx < total; idx += stride) {
+        int d = idx % FA_HEAD_DIM;
+        int h = (idx / FA_HEAD_DIM) % FA_Q_HEADS;
+        int t = idx / (FA_HEAD_DIM * FA_Q_HEADS);
+        int pos = S - tail_len + t;
+        q_tail[(size_t)fa_layer_idx * Q_TAIL_CAPACITY * FA_Q_HEADS * FA_HEAD_DIM
+               + (size_t)t * FA_Q_HEADS * FA_HEAD_DIM
+               + (size_t)h * FA_HEAD_DIM
+               + d] = q[(size_t)pos * FA_QPROJ_SIZE + h * FA_HEAD_DIM * 2 + d];
+    }
+}
+
 // ===== Phase: causal attention (per (s, q_head), single-warp online softmax) =====
 __device__ void phase_causal_attn(const __nv_bfloat16 *q, const __nv_bfloat16 *k,
                                   const __nv_bfloat16 *v, __nv_bfloat16 *out, int S)
@@ -856,6 +879,8 @@ prefill_megakernel(
     __nv_bfloat16 *attn_buf, __nv_bfloat16 *mlp_buf,
     __nv_bfloat16 *dn_out_buf,
     float *beta_buf, float *alpha_buf,
+    __nv_bfloat16 *fa_q_tail,
+    int q_tail_len,
     __nv_bfloat16 *final_normed, __nv_bfloat16 *hidden_bf16_out,
     float *lm_bmv, int *lm_bmi)
 {
@@ -964,6 +989,8 @@ prefill_megakernel(
                                fa_k_cache + fa_idx * fa_stride,
                                fa_v_cache + fa_idx * fa_stride, S, max_seq_len);
             grid.sync();
+            phase_capture_fa_q_tail(proj_buf, fa_q_tail, fa_idx, S, q_tail_len);
+            grid.sync();
 
             phase_causal_attn(proj_buf, proj_buf2, attn_buf, dn_out_buf, S);
             grid.sync();
@@ -1039,6 +1066,8 @@ extern "C" void launch_prefill_bf16_mega(
     __nv_bfloat16 *attn_buf, __nv_bfloat16 *mlp_buf,
     __nv_bfloat16 *dn_out_buf,
     float *beta_buf, float *alpha_buf,
+    __nv_bfloat16 *fa_q_tail,
+    int q_tail_len,
     __nv_bfloat16 *final_normed, __nv_bfloat16 *hidden_bf16_out,
     float *lm_bmv, int *lm_bmi,
     cudaStream_t stream)
@@ -1061,6 +1090,8 @@ extern "C" void launch_prefill_bf16_mega(
     __nv_bfloat16 *a_arg = attn_buf; __nv_bfloat16 *m_arg = mlp_buf;
     __nv_bfloat16 *dn_out_arg = dn_out_buf;
     float *bb = beta_buf; float *ab = alpha_buf;
+    __nv_bfloat16 *qtail = fa_q_tail;
+    int qtail_len = q_tail_len;
     __nv_bfloat16 *fnrm = final_normed; __nv_bfloat16 *hout = hidden_bf16_out;
     float *lv = lm_bmv; int *li_ = lm_bmi;
 
@@ -1075,6 +1106,7 @@ extern "C" void launch_prefill_bf16_mega(
         (void *)&a_arg, (void *)&m_arg,
         (void *)&dn_out_arg,
         (void *)&bb, (void *)&ab,
+        (void *)&qtail, (void *)&qtail_len,
         (void *)&fnrm, (void *)&hout,
         (void *)&lv, (void *)&li_,
     };

@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <iostream>
+#include <numeric>
 #include <string>
 #include <vector>
 
@@ -22,6 +23,8 @@ extern "C" void launch_prefill_bf16_mega(
     __nv_bfloat16 *attn_buf, __nv_bfloat16 *mlp_buf,
     __nv_bfloat16 *dn_out_buf,
     float *beta_buf, float *alpha_buf,
+    __nv_bfloat16 *fa_q_tail,
+    int q_tail_len,
     __nv_bfloat16 *final_normed, __nv_bfloat16 *hidden_bf16_out,
     float *lm_bmv, int *lm_bmi,
     cudaStream_t stream);
@@ -94,6 +97,8 @@ int main(int argc, char **argv) {
         static_cast<__nv_bfloat16 *>(ctx.dn_out_buf),
         static_cast<float *>(ctx.beta_buf),
         static_cast<float *>(ctx.alpha_buf),
+        static_cast<__nv_bfloat16 *>(ctx.fa_q_tail),
+        8,
         static_cast<__nv_bfloat16 *>(ctx.final_normed),
         static_cast<__nv_bfloat16 *>(ctx.hidden_bf16_out),
         static_cast<float *>(ctx.lm_bmv),
@@ -112,10 +117,22 @@ int main(int argc, char **argv) {
 
     int token = -1;
     cudaMemcpy(&token, ctx.output_token, sizeof(token), cudaMemcpyDeviceToHost);
+    std::vector<uint16_t> qtail(6 * 8 * 8 * 256);
+    cudaMemcpy(qtail.data(), ctx.fa_q_tail, qtail.size() * sizeof(uint16_t), cudaMemcpyDeviceToHost);
+    const uint64_t qtail_checksum = std::accumulate(
+        qtail.begin(), qtail.end(), uint64_t{0},
+        [](uint64_t acc, uint16_t v) { return acc + v; });
+    if (qtail_checksum == 0) {
+        std::cerr << "fa_q_tail capture produced all zeros\n";
+        cudaFree(ids_dev);
+        dflash27b::free_mega_pflash(ctx);
+        return 1;
+    }
     std::cout << "prefill megakernel smoke ok"
               << " seq_len=" << seq_len
               << " max_seq_len=" << max_seq_len
               << " token=" << token
+              << " qtail_checksum=" << qtail_checksum
               << " launch_ms=" << elapsed_ms(t0, t1)
               << "\n";
 
