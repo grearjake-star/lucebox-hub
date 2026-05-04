@@ -616,6 +616,15 @@ std::vector<int32_t> mega_pflash_score_and_compress(
         return {};
     }
     if (S <= chunk_size || keep_ratio >= 1.0f) return ids;
+    if (!env_enabled("DFLASH_FP_USE_BSA")) {
+        const size_t fallback_needed =
+            (size_t)S * ctx.max_seq_len + (size_t)std::min(S, 4096) * FA_HEAD_DIM;
+        const size_t fallback_capacity = (size_t)S * DN_CONV_CH;
+        if (fallback_needed > fallback_capacity) {
+            set_last_error("mega-pflash: long native FA fallback requires DFLASH_FP_USE_BSA=1");
+            return {};
+        }
+    }
     int tail_len = std::min({n_lookahead, 8, S});
     int n_chunks = div_up(S, chunk_size);
     int total_rows = 6 * FA_Q_HEADS * tail_len;

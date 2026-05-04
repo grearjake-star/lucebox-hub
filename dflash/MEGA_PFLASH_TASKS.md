@@ -16,6 +16,7 @@
 - [x] Compile `prefill_megakernel.cu` in the `dflash` SM120 build and add a native smoke harness.
 - [x] Extend `launch_prefill_bf16_mega` past the original `MAX_SEQ=2048` cache-stride limit.
 - [x] Capture FA q-tail inside the cooperative megakernel and verify it in smoke.
+- [x] Harden native Mega PFlash long-context smoke: require BSA for unsafe FA fallback and fail on empty compression output.
 
 ## Next Work
 

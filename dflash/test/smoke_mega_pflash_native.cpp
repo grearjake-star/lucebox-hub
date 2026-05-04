@@ -1,4 +1,5 @@
 #include "mega_pflash_native.h"
+#include "dflash27b.h"
 
 #include <algorithm>
 #include <chrono>
@@ -46,6 +47,12 @@ int main(int argc, char ** argv) {
     const std::vector<int32_t> out =
         dflash27b::mega_pflash_score_and_compress(ctx, ids, keep_ratio);
     const auto comp_b = std::chrono::steady_clock::now();
+    if (out.empty() && !ids.empty() && keep_ratio < 1.0f) {
+        std::cerr << "mega_pflash_score_and_compress failed: "
+                  << dflash27b_last_error() << "\n";
+        dflash27b::free_mega_pflash(ctx);
+        return 1;
+    }
 
     std::cout << "native mega-pflash smoke ok"
               << " seq_len=" << seq_len
