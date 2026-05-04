@@ -351,8 +351,8 @@ __global__ void pf_lm_reduce(const float *bmv, const int *bmi, int *out, int nb)
 //   4. Build M[i,j] = β_eff[i] * exp(cs[i]-cs[j]) * (K[i]·K[j]) strict lower tri.
 //   5. Initialize U = β * V, W = β * exp(cs) * K.
 //   6. Forward substitute: u[i] = U[i] - Σ_{s<i} M[i,s] * u[s], same for w.
-//   7. Write u, w to global.
-// All math in f32. Output u_intra/w_intra are f32 [N, C, H, D].
+//   7. Write u to f32 global and w to 16-bit global.
+// All math in f32. Output u_intra is f32 [N, C, H, D]; w_intra is half_t.
 constexpr int DN_CHUNK_C = 8;       // chunk size (last chunk may be partial)
 constexpr int DN_CHUNK_BLOCK = 128; // threads per block
 
@@ -363,7 +363,7 @@ __global__ void pf_dn_chunk_phase1(
     const half_t *a_log,
     const half_t *dt_bias,
     float *u_out,                // [N, C, DN_HEADS, DN_VAL]
-    float *w_out,                // [N, C, DN_HEADS, DN_KEY]
+    half_t *w_out,               // [N, C, DN_HEADS, DN_KEY]
     float *cs_out,               // [N, C, DN_HEADS]
     int S)
 {
@@ -488,7 +488,7 @@ __global__ void pf_dn_chunk_phase1(
         int d = ci % DN_KEY;
         int t = t_start + c;
         if (t < S) {
-            w_out[((n * DN_CHUNK_C + c) * DN_HEADS + h) * DN_KEY + d] = s_w[ci];
+            w_out[((n * DN_CHUNK_C + c) * DN_HEADS + h) * DN_KEY + d] = F2H(s_w[ci]);
         }
     }
 }
@@ -511,7 +511,7 @@ constexpr int DN_PHASE2_BLOCK = 128;                       // threads per block
 __global__ void __launch_bounds__(DN_PHASE2_BLOCK, 1)
 pf_dn_chunk_phase2(
     const float *u_in,           // [N, C, H, Dv]
-    const float *w_in,           // [N, C, H, Dk]
+    const half_t *w_in,          // [N, C, H, Dk]
     const float *cs_in,          // [N*C, H]
     const float *qkv_pre,        // [S, DN_CONV_CH]   (we need Q and K here, K is shared with phase1)
     float *state,                // [H, Dv, Dk] f32 — persistent across decode too
@@ -565,7 +565,7 @@ pf_dn_chunk_phase2(
             int d = ci % DN_KEY;
             int t = t_start + c;
             if (t < S) {
-                s_w[c * DK_S + d] = w_in[((n * DN_CHUNK_C + c) * DN_HEADS + h) * DN_KEY + d];
+                s_w[c * DK_S + d] = H2F(w_in[((n * DN_CHUNK_C + c) * DN_HEADS + h) * DN_KEY + d]);
             } else {
                 s_w[c * DK_S + d] = 0.f;
             }
@@ -700,7 +700,7 @@ pf_dn_chunk_phase2(
 __global__ void __launch_bounds__(DN_PHASE2_BLOCK, 2)
 pf_dn_chunk_phase2_wmma(
     const float *u_in,
-    const float *w_in,
+    const half_t *w_in,
     const float *cs_in,
     const float *qkv_pre,
     float *state,
@@ -776,8 +776,8 @@ pf_dn_chunk_phase2_wmma(
             int c = ci / DN_KEY;
             int d = ci % DN_KEY;
             int t = t_start + c;
-            float v = (t < S) ? w_in[((n * DN_CHUNK_C + c) * DN_HEADS + h) * DN_KEY + d] : 0.f;
-            s_w_bf16[c * DK_B + d] = F2H(v);
+            half_t v = (t < S) ? w_in[((n * DN_CHUNK_C + c) * DN_HEADS + h) * DN_KEY + d] : F2H(0.f);
+            s_w_bf16[c * DK_B + d] = v;
         }
         // Pad s_w_bf16 rows DN_CHUNK_C..15 with zero so the WMMA fragment sees
         // a clean 16×K tile (M=8 → pad to M=16).
@@ -1693,7 +1693,7 @@ extern "C" void launch_prefill_bf16(
     half_t *attn_buf, half_t *mlp_buf,
     half_t *dn_out_buf,
     float *beta_buf, float *alpha_buf, float *dn_pre_qkv,
-    float *dn_u_scratch, float *dn_w_scratch, float *dn_cs_scratch,
+    float *dn_u_scratch, half_t *dn_w_scratch, float *dn_cs_scratch,
     const half_t *fused_fa_qkv_base,
     const half_t *fused_gate_up_base,
     half_t *final_normed, half_t *hidden_bf16_out,

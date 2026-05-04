@@ -5,6 +5,7 @@
 
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -45,6 +46,14 @@ struct MegaPFlashContext {
     void * lm_bmv = nullptr;
     void * lm_bmi = nullptr;
     void * output_token = nullptr;
+    void * score_ids_dev = nullptr;
+    void * score_logit_scratch = nullptr;
+    void * score_token_scores = nullptr;
+    void * score_chunk_scores = nullptr;
+    size_t score_ids_bytes = 0;
+    size_t score_logit_bytes = 0;
+    size_t score_token_bytes = 0;
+    size_t score_chunk_bytes = 0;
     bool loaded = false;
 };
 

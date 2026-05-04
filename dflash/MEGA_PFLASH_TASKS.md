@@ -9,13 +9,15 @@
 - [x] Add configurable prefill parking policy: `full`, `draft`, and `none`.
 - [x] Make native Mega PFlash self-contained without modifying the BSA submodule.
 - [x] Enable DeltaNet WMMA phase-2 by default for Mega PFlash.
+- [x] Preallocate/reuse native Mega PFlash scoring buffers instead of allocating per compression call.
+- [x] Store DeltaNet `dn_w_scratch` in 16-bit activation format to reduce persistent scratch pressure.
+- [x] Release BSA persistent buffers when freeing the native Mega PFlash context.
 
 ## Next Work
 
-- [ ] Make true no-park stable under the current 27B target by reducing DeltaNet scratch.
-- [ ] Rewrite `dn_w_scratch` as BF16 or tiled storage without triggering BSA runtime allocation failures.
+- [ ] Make true no-park stable under the current 27B target by validating the reduced DeltaNet scratch at 64K.
 - [ ] Tile or avoid persistent `dn_pre_qkv` where possible.
-- [ ] Preallocate/reuse BSA scratch to avoid runtime `cudaMalloc` spikes during Mega PFlash.
+- [ ] Add explicit FlashPrefill selection scratch reuse for `dmK`, `dS`, `dM`, `dIdx`, and `dCnt`.
 - [ ] Profile the remaining Mega PFlash forward kernels against stock PFlash's 64K compression path.
 - [ ] Test smaller or more aggressively quantized 27B target GGUF variants for no-park headroom.
 - [ ] Decide default backend policy after quality and stability A/B runs.

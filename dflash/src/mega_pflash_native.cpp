@@ -1,4 +1,5 @@
 #include "mega_pflash_native.h"
+#include "flashprefill.h"
 #include "internal.h"
 
 #include <cuda_runtime.h>
@@ -184,6 +185,45 @@ void *alloc_dev(MegaPFlashContext &ctx, size_t bytes) {
     if (cudaMalloc(&p, bytes) != cudaSuccess) return nullptr;
     ctx.owned_device_ptrs.push_back(p);
     return p;
+}
+
+void free_score_buffers(MegaPFlashContext &ctx) {
+    if (ctx.score_ids_dev) cudaFree(ctx.score_ids_dev);
+    if (ctx.score_logit_scratch) cudaFree(ctx.score_logit_scratch);
+    if (ctx.score_token_scores) cudaFree(ctx.score_token_scores);
+    if (ctx.score_chunk_scores) cudaFree(ctx.score_chunk_scores);
+    ctx.score_ids_dev = nullptr;
+    ctx.score_logit_scratch = nullptr;
+    ctx.score_token_scores = nullptr;
+    ctx.score_chunk_scores = nullptr;
+    ctx.score_ids_bytes = 0;
+    ctx.score_logit_bytes = 0;
+    ctx.score_token_bytes = 0;
+    ctx.score_chunk_bytes = 0;
+}
+
+bool grow_score_buffer(void **ptr, size_t &capacity, size_t bytes, const char *name) {
+    if (capacity >= bytes) return true;
+    if (*ptr) cudaFree(*ptr);
+    *ptr = nullptr;
+    capacity = 0;
+    if (cudaMalloc(ptr, bytes) != cudaSuccess) {
+        set_last_error(std::string("mega-pflash: cudaMalloc failed for '") + name + "'");
+        return false;
+    }
+    capacity = bytes;
+    return true;
+}
+
+bool ensure_score_buffers(MegaPFlashContext &ctx, int S, int total_rows, int n_chunks) {
+    return grow_score_buffer(&ctx.score_ids_dev, ctx.score_ids_bytes,
+                             (size_t)S * sizeof(int), "score_ids_dev") &&
+           grow_score_buffer(&ctx.score_logit_scratch, ctx.score_logit_bytes,
+                             (size_t)total_rows * S * sizeof(float), "score_logit_scratch") &&
+           grow_score_buffer(&ctx.score_token_scores, ctx.score_token_bytes,
+                             (size_t)S * sizeof(float), "score_token_scores") &&
+           grow_score_buffer(&ctx.score_chunk_scores, ctx.score_chunk_bytes,
+                             (size_t)n_chunks * sizeof(float), "score_chunk_scores");
 }
 
 bool upload_tensor(MegaPFlashContext &ctx, const StMap &st, const uint8_t *blob,
@@ -509,7 +549,7 @@ bool load_mega_pflash(const std::string & model_path,
     if (!alloc(&out.alpha_buf, (size_t)S * DN_HEADS * sizeof(float), "alpha_buf")) return false;
     if (!alloc(&out.dn_pre_qkv, (size_t)S * DN_CONV_CH * sizeof(float), "dn_pre_qkv")) return false;
     if (!alloc(&out.dn_u_scratch, (size_t)S_pad * DN_HEADS * 128 * sizeof(float), "dn_u_scratch")) return false;
-    if (!alloc(&out.dn_w_scratch, (size_t)S_pad * DN_HEADS * 128 * sizeof(float), "dn_w_scratch")) return false;
+    if (!alloc(&out.dn_w_scratch, (size_t)S_pad * DN_HEADS * 128 * 2, "dn_w_scratch")) return false;
     if (!alloc(&out.dn_cs_scratch, (size_t)S_pad * DN_HEADS * sizeof(float), "dn_cs_scratch")) return false;
     if (!env_enabled("DFLASH_MEGA_PFLASH_WITH_LM_HEAD")) {
         out.final_normed = nullptr;
@@ -541,10 +581,14 @@ bool load_mega_pflash(const std::string & model_path,
 }
 
 void free_mega_pflash(MegaPFlashContext & ctx) {
+    free_score_buffers(ctx);
     for (void *p : ctx.owned_device_ptrs) {
         if (p) cudaFree(p);
     }
     ctx.owned_device_ptrs.clear();
+#ifdef DFLASH27B_HAVE_BSA
+    flashprefill::dflash_bsa_free_persistent();
+#endif
     ctx = MegaPFlashContext{};
 }
 
@@ -565,19 +609,25 @@ std::vector<int32_t> mega_pflash_score_and_compress(
         set_last_error("mega-pflash: prompt exceeds max_seq_len");
         return {};
     }
+    if (chunk_size <= 0 || n_lookahead <= 0) {
+        set_last_error("mega-pflash: chunk_size and n_lookahead must be positive");
+        return {};
+    }
     if (S <= chunk_size || keep_ratio >= 1.0f) return ids;
-    int *ids_dev = nullptr;
-    float *logit_scratch = nullptr;
-    float *token_scores = nullptr;
-    float *chunk_scores = nullptr;
-    cudaMalloc(&ids_dev, (size_t)S * sizeof(int));
-    cudaMemcpy(ids_dev, ids.data(), (size_t)S * sizeof(int), cudaMemcpyHostToDevice);
     int tail_len = std::min({n_lookahead, 8, S});
     int n_chunks = div_up(S, chunk_size);
     int total_rows = 6 * FA_Q_HEADS * tail_len;
-    cudaMalloc(&logit_scratch, (size_t)total_rows * S * sizeof(float));
-    cudaMalloc(&token_scores, (size_t)S * sizeof(float));
-    cudaMalloc(&chunk_scores, (size_t)n_chunks * sizeof(float));
+    if (!ensure_score_buffers(ctx, S, total_rows, n_chunks)) {
+        return {};
+    }
+    int *ids_dev = (int *)ctx.score_ids_dev;
+    float *logit_scratch = (float *)ctx.score_logit_scratch;
+    float *token_scores = (float *)ctx.score_token_scores;
+    float *chunk_scores = (float *)ctx.score_chunk_scores;
+    if (cudaMemcpy(ids_dev, ids.data(), (size_t)S * sizeof(int), cudaMemcpyHostToDevice) != cudaSuccess) {
+        set_last_error("mega-pflash: CUDA copy failed for input ids");
+        return {};
+    }
 
     auto t0 = std::chrono::steady_clock::now();
     cudaStream_t stream = 0;
@@ -607,12 +657,13 @@ std::vector<int32_t> mega_pflash_score_and_compress(
     auto err = cudaGetLastError();
     if (err != cudaSuccess) {
         set_last_error(std::string("mega-pflash: CUDA error: ") + cudaGetErrorString(err));
-        cudaFree(ids_dev); cudaFree(logit_scratch); cudaFree(token_scores); cudaFree(chunk_scores);
         return {};
     }
     std::vector<float> h_chunks((size_t)n_chunks);
-    cudaMemcpy(h_chunks.data(), chunk_scores, (size_t)n_chunks * sizeof(float), cudaMemcpyDeviceToHost);
-    cudaFree(ids_dev); cudaFree(logit_scratch); cudaFree(token_scores); cudaFree(chunk_scores);
+    if (cudaMemcpy(h_chunks.data(), chunk_scores, (size_t)n_chunks * sizeof(float), cudaMemcpyDeviceToHost) != cudaSuccess) {
+        set_last_error("mega-pflash: CUDA copy failed for chunk scores");
+        return {};
+    }
 
     int keep_tokens = std::max(1, (int)std::ceil(S * keep_ratio));
     int keep_chunks = std::max(1, std::min(n_chunks, (int)std::ceil((float)keep_tokens / chunk_size)));
