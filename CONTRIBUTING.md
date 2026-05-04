@@ -1,85 +1,142 @@
 # Contributing to Lucebox
 
-Thanks for considering a contribution. Lucebox is a hub of self-contained optimization projects. Each one lives with its own README, benchmarks, and code, and the hub stays thin on purpose.
+Lucebox is a hub of self-contained local-inference optimization projects. Each
+project owns its build, benchmark harness, and results. Keep changes scoped and
+make performance claims reproducible.
 
-## What we accept
+## What We Accept
 
-- **Kernel improvements** that preserve correctness and improve `tok/s`, `tok/J`, or memory footprint on the target hardware. Benchmark deltas required.
-- **Speculative decoding algorithms** that improve our current SOTA performances
-- **Benchmark harness work** under `benchmarks/` once that directory starts shipping code.
-- **Doc fixes and writeups** — always welcome.
+- Kernel, graph, cache, and scheduling changes that preserve correctness and
+  improve `tok/s`, latency, memory footprint, or fit.
+- Speculative decoding changes that improve DFlash acceptance length or reduce
+  verify overhead on the same target/draft pair.
+- Benchmark harness work that makes A/B runs easier to reproduce.
+- Documentation that removes stale commands, records methodology, or explains
+  non-obvious runtime constraints.
 
+## What We Do Not Accept
 
-## What we don't accept (yet)
+- Closed-source runtime dependencies.
+- Benchmark-only claims without exact hardware, model files, command lines, and
+  before/after numbers.
+- New runtime fallbacks that silently change model format, tensor naming, or
+  metadata requirements. DFlash production runtime is quantized GGUF-only.
 
-- Closed-source dependencies. Everything here has to be reproducible from public sources.
+## DFlash Setup
 
-## Luce DFash Setup
+Hardware:
 
-### dflash
+- Recommended: RTX 5090 / Blackwell, CUDA 12.8+.
+- Supported development path: NVIDIA sm_86+ with enough VRAM for the chosen
+  target/draft/cache configuration.
+- Native Mega PFlash uses a Qwen3.5-0.8B safetensors snapshot; this is separate
+  from the DFlash draft runtime.
 
-**Hardware:** NVIDIA sm_86+ GPU (RTX 3090, A10, A40, 4090) or Jetson AGX Thor sm_110, 24 GB VRAM. Thor requires CUDA 13+.
-
-On Ubuntu 22.04 or 24.04, one script installs all system dependencies — `build-essential`, `cmake`, `git`, `git-lfs`, and the CUDA Toolkit from NVIDIA's repo:
+System dependencies:
 
 ```bash
 sudo dflash/scripts/setup_system.sh
+git submodule update --init --recursive
 ```
 
-The script is idempotent and configures `nvcc` on PATH for both bash and zsh. For other distros see the [CUDA installation guide](https://docs.nvidia.com/cuda/cuda-installation-guide-linux/).
+Manual minimums:
 
-| Tool | Min version |
-|------|------------|
+| Tool | Minimum |
+|------|---------|
 | GCC / G++ | 11 |
 | CMake | 3.18 |
 | Git | 2.x |
 | git-lfs | any |
 | CUDA Toolkit | 12.0+ |
-| huggingface-cli | any |
+| Python | 3.10+ |
 
-After setup:
+Build the current 5090 target:
 
 ```bash
-git submodule update --init --recursive
-cmake -B dflash/build -S dflash -DCMAKE_BUILD_TYPE=Release
-cmake --build dflash/build --target test_dflash -j
+cmake -B dflash/build-luce-sm120 -S dflash \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DCMAKE_CUDA_ARCHITECTURES=120 \
+  -DDFLASH27B_USER_CUDA_ARCHITECTURES=120 \
+  -DDFLASH27B_ENABLE_BSA=ON
+
+cmake --build dflash/build-luce-sm120 \
+  --target test_dflash test_generate smoke_load_draft smoke_draft_graph \
+  -j 8
 ```
 
-> If cmake was previously run without CUDA, wipe the build directory first (`rm -rf dflash/build`) to avoid a stale compiler cache.
+If CMake was previously run with different CUDA arch settings, use a new build
+directory. Do not reuse a stale CUDA build directory for performance numbers.
 
----
+## Required Checks
 
-## Before you open a PR
+For DFlash runtime changes:
 
-1. **Benchmark before and after** on the same hardware, at the same power limit, with the same warmup. Numbers without methodology don't get merged.
-2. **Run the existing correctness check** (`bench_pp_tg.py` for megakernel) and confirm your change doesn't regress output parity.
-3. **One concern per PR.** Kernel/algorithms changes, docs, and build config go in separate commits or separate PRs.
+```bash
+cd dflash
 
-## Commit message format
+./build-luce-sm120/smoke_load_draft \
+  /home/jake/models/Qwen3.6-27B-DFlash-safetensors/draft-q8_0.gguf
 
-Conventional commits:
+./build-luce-sm120/smoke_draft_graph \
+  /home/jake/models/Qwen3.6-27B-DFlash-safetensors/draft-q8_0.gguf 8
 
+DFLASH_TARGET=/home/jake/models/Qwen3.6-27B-GGUF/Qwen3.6-27B-UD-Q5_K_XL.gguf \
+DFLASH_DRAFT=/home/jake/models/Qwen3.6-27B-DFlash-safetensors/draft-q8_0.gguf \
+DFLASH_BIN=/home/jake/lucebox-hub/dflash/build-luce-sm120/test_dflash \
+DFLASH_BIN_AR=/home/jake/lucebox-hub/dflash/build-luce-sm120/test_generate \
+.venv/bin/python scripts/bench_llm.py \
+  --benches HumanEval,GSM8K,Math500 \
+  --n-gen 256 \
+  --budget 22 \
+  --n-sample 10
 ```
-feat(megakernel): fused QKV+RoPE path cuts per-token launch by 1 kernel
-fix(dflash): clamp int8 DeltaNet state update before dequant
-docs(hub): add DVFS methodology link
+
+For Python script changes:
+
+```bash
+cd dflash
+.venv/bin/python -m py_compile \
+  scripts/bench_llm.py \
+  scripts/bench_daemon.py \
+  scripts/bench_he.py \
+  scripts/run.py \
+  scripts/server.py \
+  scripts/server_tools.py
 ```
 
-Allowed types: `feat`, `fix`, `refactor`, `perf`, `docs`, `test`, `bench`, `chore`, `ci`.
+## PR Expectations
 
-## Hardware access
+1. State the exact model files, GPU, CUDA version, build directory, and command line.
+2. Report before/after numbers on the same hardware and settings.
+3. Keep one concern per PR. Docs, build config, runtime behavior, and benchmark
+   methodology should be separable.
+4. Include any residual risks, skipped tests, or known cases where a fallback was
+   intentionally removed.
 
-If you want to contribute benchmarks but don't have the hardware:
+## Commit Messages
 
-- We can run numbered runs on our RTX 3090 (24GB) or Ryzen 395 AI Max (128GB). Open an issue with the PR.
-- Apple Silicon numbers need an M-series machine running `powermetrics`, not a remote box.
+Use conventional commits:
 
-## Getting help
+```text
+perf(dflash): harden q8 draft gguf loader
+bench(dflash): add api latency harness for all3 datasets
+docs(hub): refresh quant dflash build path
+```
 
-- [Discord](https://discord.gg/yHfswqZmJQ) — fastest feedback
-- [Issues](https://github.com/Luce-Org/lucebox-hub/issues) — for bugs and proposals
-- Mention `@Luce-Org/maintainers` on a PR when it's ready for review
+Allowed types: `feat`, `fix`, `refactor`, `perf`, `docs`, `test`, `bench`,
+`chore`, `ci`.
 
-## Licensing
+## Hardware Access
+
+If you need benchmark numbers but do not have matching hardware, open an issue
+or PR with the exact command. We can run numbered RTX 5090 or RTX 3090 passes
+when the branch is reviewable.
+
+## Getting Help
+
+- Discord: https://discord.gg/yHfswqZmJQ
+- Issues: https://github.com/Luce-Org/lucebox-hub/issues
+
+## License
 
 By contributing you agree your work is MIT-licensed, same as the rest of the repo.

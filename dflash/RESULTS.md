@@ -1,12 +1,100 @@
-# Luce DFlash benchmark results
+# Luce DFlash Benchmark Results
 
-Single RTX 3090 24 GB, CUDA 12, driver 535.
-Target: `unsloth/Qwen3.5-27B-GGUF` (Q4_K_M, ~16 GB).
-Draft:  `z-lab/Qwen3.5-27B-DFlash` (BF16, 3.46 GB).
-Concurrency = 1, greedy decoding, `n_gen=256`.
-Reproduce with `python3 scripts/bench_llm.py` (samples 10 prompts/dataset, seed=42).
+This file keeps both current 5090 numbers and older tuning data. Current
+runtime defaults use a Qwen3.6 27B Q5_K_XL target GGUF and a quantized Q8_0
+DFlash draft GGUF. Runtime DFlash safetensors support has been removed.
 
-## Headline — AR vs Luce DFlash at concurrency 1
+## Current Headline — RTX 5090, Qwen3.6, Q8 Draft GGUF
+
+Target: `/home/jake/models/Qwen3.6-27B-GGUF/Qwen3.6-27B-UD-Q5_K_XL.gguf`.
+Draft: `/home/jake/models/Qwen3.6-27B-DFlash-safetensors/draft-q8_0.gguf`.
+Concurrency = 1, greedy decoding, `n_gen=256`, DDTree budget `22`, seed `42`,
+10 samples per task.
+
+Reproduce:
+
+```bash
+DFLASH_TARGET=/home/jake/models/Qwen3.6-27B-GGUF/Qwen3.6-27B-UD-Q5_K_XL.gguf \
+DFLASH_DRAFT=/home/jake/models/Qwen3.6-27B-DFlash-safetensors/draft-q8_0.gguf \
+DFLASH_BIN=/home/jake/lucebox-hub/dflash/build-luce-sm120/test_dflash \
+DFLASH_BIN_AR=/home/jake/lucebox-hub/dflash/build-luce-sm120/test_generate \
+DFLASH27B_KV_K=f16 \
+DFLASH27B_KV_V=f16 \
+DFLASH27B_FA_WINDOW=4096 \
+.venv/bin/python scripts/bench_llm.py \
+  --benches HumanEval,GSM8K,Math500 \
+  --n-gen 256 \
+  --budget 22 \
+  --n-sample 10
+```
+
+| Task | AR tok/s | DFlash tok/s | AL | Speedup |
+|------|---------:|-------------:|---:|--------:|
+| HumanEval | 58.01 | **273.11** | 7.63 | **4.71x** |
+| GSM8K | 58.78 | **228.02** | 6.35 | **3.88x** |
+| Math500 | 58.66 | **257.18** | 7.20 | **4.38x** |
+
+AR = autoregressive target-only decode via `test_generate`.
+DFlash = quantized DFlash draft + DDTree budget 22 verify + fast rollback.
+AL = mean committed tokens per draft/verify step.
+
+Datasets pulled via Hugging Face `datasets`:
+
+- HumanEval: `openai_humaneval`, `prompt` field.
+- GSM8K: `gsm8k` main split, `Question: ... Answer: ` format.
+- Math500: `HuggingFaceH4/MATH-500`, `Problem: ... Solution: ` format.
+
+## API Streaming — Local HTTP
+
+Measured through `scripts/server_tools.py` and `scripts/bench_daemon.py`.
+
+```bash
+.venv/bin/python scripts/bench_daemon.py \
+  --url http://127.0.0.1:8012 \
+  --benches HumanEval,GSM8K,Math500 \
+  --n-gen 256 \
+  --n-sample 10 \
+  --warmup
+```
+
+| Task | Wall tok/s | Decode tok/s | Aggregate decode |
+|------|-----------:|-------------:|-----------------:|
+| HumanEval | 166.87 | 227.60 | 224.01 |
+| GSM8K | 187.17 | 253.05 | 247.30 |
+| Math500 | 194.50 | 264.82 | 259.49 |
+
+The same benchmark accepts an `https://...` URL to include TLS, reverse-proxy,
+or remote network latency.
+
+## Q8 GGUF vs Original DFlash Safetensors
+
+The safetensors numbers below were collected before runtime safetensors support
+was removed. They remain here only as the A/B basis for hardening the GGUF path.
+
+### Raw C++ Harness
+
+| Task | Safetensors DFlash | Q8 GGUF DFlash | Delta | Safetensors AL | Q8 GGUF AL |
+|------|-------------------:|---------------:|------:|---------------:|-----------:|
+| HumanEval | 251.93 | 273.11 | +8.4% | 7.73 | 7.63 |
+| GSM8K | 199.20 | 228.02 | +14.5% | 6.14 | 6.35 |
+| Math500 | 226.65 | 257.18 | +13.5% | 7.25 | 7.20 |
+
+### API Streaming Harness
+
+| Task | Safetensors Wall | Q8 GGUF Wall | Delta | Safetensors Decode | Q8 GGUF Decode |
+|------|-----------------:|-------------:|------:|-------------------:|---------------:|
+| HumanEval | 159.25 | 166.87 | +4.8% | 215.02 | 227.60 |
+| GSM8K | 186.28 | 187.17 | +0.5% | 251.89 | 253.05 |
+| Math500 | 193.43 | 194.50 | +0.6% | 262.79 | 264.82 |
+
+## Historical RTX 3090 — Qwen3.5 BF16 Draft
+
+Single RTX 3090 24 GB, CUDA 12, driver 535. Target:
+`unsloth/Qwen3.5-27B-GGUF` (Q4_K_M, ~16 GB). Draft:
+`z-lab/Qwen3.5-27B-DFlash` (BF16, 3.46 GB). Concurrency = 1, greedy decoding,
+`n_gen=256`.
+
+### Historical Headline — AR vs Luce DFlash at concurrency 1
 
 | Task      | AR tok/s | DFlash tok/s | AL   | Speedup |
 |-----------|:--------:|:------------:|:----:|:-------:|
@@ -230,11 +318,12 @@ Peak per-prompt: **70.70 tok/s at AL 10.67** (3.55× over AR on the same prompt)
 
 AR scaling (~0.53×) tracks bandwidth × SM count. DFlash scaling (~0.41×) is lower because the draft compute bottleneck is proportionally larger on a slower GPU, even after the BF16→FP16 fix. Acceptance length is identical (same draft model, same tokens), confirming the FP16 conversion is numerically faithful.
 
-## RTX 5090 (Blackwell, sm_120/sm_120a, 32 GB)
+## Historical RTX 5090 BF16 Draft Run
 
 Single RTX 5090 32 GB, CUDA 13.0.88, driver 595.58.03.
 Target: `unsloth/Qwen3.6-27B-GGUF` (`Qwen3.6-27B-UD-Q5_K_XL.gguf`, ~19 GB).
-Draft:  local Qwen3.6-27B DFlash safetensors (`model.safetensors`, ~3.3 GB).
+Draft: local Qwen3.6-27B DFlash BF16 weights, before the runtime was hardened
+to quantized GGUF-only.
 Concurrency = 1, greedy decoding, `n_gen=256`.
 
 Build: `cmake -B build-luce-sm120 -S . -DCMAKE_BUILD_TYPE=Release -DCMAKE_CUDA_ARCHITECTURES=120 -DDFLASH27B_USER_CUDA_ARCHITECTURES=120 -DDFLASH27B_ENABLE_BSA=ON`
@@ -327,30 +416,3 @@ Budget 12 failed all prompts with a ggml shape assertion. Budget 22 remains the
 best short-context throughput default on this 5090 build. Budget 30 produced
 the highest mean AL but lower throughput, so it is a quality-biased experiment
 rather than the base setting.
-
-## RTX 5090 Qwen3.6 Q8 Draft A/B
-
-Target: `/home/jake/models/Qwen3.6-27B-GGUF/Qwen3.6-27B-UD-Q5_K_XL.gguf`.
-Original draft: local BF16 DFlash safetensors. Quant draft:
-`/home/jake/models/Qwen3.6-27B-DFlash-safetensors/draft-q8_0.gguf`.
-All runs use `n_gen=256`, DDTree budget `22`, seed `42`, 10 samples per task.
-
-### Raw C++ harness
-
-| Task | Safetensors DFlash | Q8 GGUF DFlash | Delta | Safetensors AL | Q8 GGUF AL |
-|------|-------------------:|---------------:|------:|---------------:|-----------:|
-| HumanEval | 251.93 | 273.11 | +8.4% | 7.73 | 7.63 |
-| GSM8K     | 199.20 | 228.02 | +14.5% | 6.14 | 6.35 |
-| Math500   | 226.65 | 257.18 | +13.5% | 7.25 | 7.20 |
-
-### API streaming harness
-
-Measured through `scripts/server_tools.py` and `scripts/bench_daemon.py` over
-local HTTP. The same benchmark accepts an `https://` URL for a TLS or remote
-proxy run.
-
-| Task | Safetensors Wall | Q8 GGUF Wall | Delta | Safetensors Decode | Q8 GGUF Decode |
-|------|-----------------:|-------------:|------:|-------------------:|---------------:|
-| HumanEval | 159.25 | 166.87 | +4.8% | 215.02 | 227.60 |
-| GSM8K     | 186.28 | 187.17 | +0.5% | 251.89 | 253.05 |
-| Math500   | 193.43 | 194.50 | +0.6% | 262.79 | 264.82 |

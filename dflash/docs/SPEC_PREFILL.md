@@ -9,23 +9,29 @@ path and the [PFlash blog post](https://lucebox.com/blog/pflash):
 - **Drafter** (Qwen3-0.6B) loaded via a custom forward (`qwen3_0p6b_*`)
   with the FlashPrefill block-sparse attention kernel for long-context
   scoring.
-- **Target** (Qwen3.6-27B Q4_K_M) loaded directly via ggml.
+- **Target** (Qwen3.6-27B Q5_K_XL GGUF in the current 5090 profile) loaded
+  directly via ggml.
 - **Speculative decode** between draft + target with rollback / DDTree.
 
 Both models live in the same process, the same ggml allocator, on a
-single RTX 3090 (24 GB). No PyTorch at runtime.
+single CUDA process. No PyTorch is required in the DFlash runtime path.
 
 ## Build
 
 ```
 git submodule update --init --recursive
-mkdir build && cd build
-cmake -DCMAKE_CUDA_ARCHITECTURES=86 -DDFLASH27B_ENABLE_BSA=ON ..
-cmake --build . --target test_dflash test_flashprefill_kernels -- -j8
+cmake -B build-luce-sm120 -S . \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DCMAKE_CUDA_ARCHITECTURES=120 \
+  -DDFLASH27B_USER_CUDA_ARCHITECTURES=120 \
+  -DDFLASH27B_ENABLE_BSA=ON
+cmake --build build-luce-sm120 \
+  --target test_dflash smoke_bsa_hdim256 pflash_daemon \
+  -j 8
 ```
 
 Required:
-- CUDA Toolkit 12.0+ (sm_80+ for BSA path; sm_86 RTX 3090 is the
+- CUDA Toolkit 12.0+ (sm_80+ for BSA path; sm_120 RTX 5090 is the current
   reference target).
 - `git submodule update --init --recursive` to pull
   `deps/llama.cpp` (ggml only) and `deps/Block-Sparse-Attention` (with
@@ -128,7 +134,7 @@ src/
 test/
   test_dflash.cpp               daemon executable; supports
                                   `compress / generate / park / unpark / free drafter`
-  test_flashprefill_kernels.cpp parity tests for the 4 FP kernels
+  smoke_bsa_hdim256.cpp         BSA hdim256 smoke test for native Mega PFlash
   smoke_qwen3_0p6b_forward.cpp  drafter forward smoke at S=8K-128K
 deps/
   llama.cpp/                    submodule (ggml only; libllama not built)
