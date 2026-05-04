@@ -17,13 +17,14 @@
 - [x] Extend `launch_prefill_bf16_mega` past the original `MAX_SEQ=2048` cache-stride limit.
 - [x] Capture FA q-tail inside the cooperative megakernel and verify it in smoke.
 - [x] Harden native Mega PFlash long-context smoke: require BSA for unsafe FA fallback and fail on empty compression output.
+- [x] Add `DFLASH_MEGA_PFLASH_COOP=1` native compressor path through the cooperative megakernel.
 
 ## Next Work
 
 - [ ] Make true no-park stable under the current 27B target by validating the reduced DeltaNet scratch at 64K.
 - [ ] Tile or avoid persistent `dn_pre_qkv` where possible.
 - [ ] Add fused PFlash K-score/chunk-score output to the cooperative megakernel.
-- [ ] Replace `launch_prefill_bf16 + launch_mega_pflash_score` with one native fused-compress entry point.
+- [ ] Replace the cooperative path's remaining `launch_mega_pflash_score` pass with in-kernel scoring.
 - [ ] Profile the remaining Mega PFlash forward kernels against stock PFlash's 64K compression path.
 - [ ] Test smaller or more aggressively quantized 27B target GGUF variants for no-park headroom.
 - [ ] Decide default backend policy after quality and stability A/B runs.

@@ -386,6 +386,23 @@ extern "C" void launch_prefill_bf16(
     cudaStream_t stream,
     dflash27b::flashprefill::FlashPrefillScratch *flashprefill_scratch);
 
+#if DFLASH27B_MIN_SM >= 120
+extern "C" void launch_prefill_bf16_mega(
+    const int *token_ids, int seq_len, int max_seq_len, int *output_token,
+    const void *embed_weight, const void *layers,
+    const void *final_norm_w, const void *lm_head_w,
+    void *fa_k_cache, void *fa_v_cache, void *dn_states, void *conv_bufs,
+    void *hidden, void *residual, void *normalized,
+    void *proj_buf, void *proj_buf2, void *attn_buf, void *mlp_buf,
+    void *dn_out_buf,
+    void *beta_buf, void *alpha_buf,
+    void *fa_q_tail,
+    int q_tail_len,
+    void *final_normed, void *hidden_bf16_out,
+    void *lm_bmv, void *lm_bmi,
+    cudaStream_t stream);
+#endif
+
 extern "C" void launch_mega_pflash_score(
     const void *q_tail,
     const void *k_cache,
@@ -531,8 +548,9 @@ bool load_mega_pflash(const std::string & model_path,
         return true;
     };
     const bool use_bsa = env_enabled("DFLASH_FP_USE_BSA");
+    const bool use_coop = env_enabled("DFLASH_MEGA_PFLASH_COOP");
     if (!alloc(&out.fa_k_cache, (size_t)6 * FA_KV_HEADS * S * FA_HEAD_DIM * 2, "fa_k_cache")) return false;
-    if (!use_bsa) {
+    if (!use_bsa || use_coop) {
         if (!alloc(&out.fa_v_cache, (size_t)6 * FA_KV_HEADS * S * FA_HEAD_DIM * 2, "fa_v_cache")) return false;
     }
     if (!alloc(&out.fa_q_tail, (size_t)6 * 8 * FA_Q_HEADS * FA_HEAD_DIM * 2, "fa_q_tail")) return false;
@@ -552,7 +570,7 @@ bool load_mega_pflash(const std::string & model_path,
     if (!alloc(&out.dn_u_scratch, (size_t)S_pad * DN_HEADS * 128 * sizeof(float), "dn_u_scratch")) return false;
     if (!alloc(&out.dn_w_scratch, (size_t)S_pad * DN_HEADS * 128 * 2, "dn_w_scratch")) return false;
     if (!alloc(&out.dn_cs_scratch, (size_t)S_pad * DN_HEADS * sizeof(float), "dn_cs_scratch")) return false;
-    if (!env_enabled("DFLASH_MEGA_PFLASH_WITH_LM_HEAD")) {
+    if (!env_enabled("DFLASH_MEGA_PFLASH_WITH_LM_HEAD") && !use_coop) {
         out.final_normed = nullptr;
         out.hidden_bf16_out = nullptr;
         out.lm_bmv = nullptr;
@@ -616,7 +634,8 @@ std::vector<int32_t> mega_pflash_score_and_compress(
         return {};
     }
     if (S <= chunk_size || keep_ratio >= 1.0f) return ids;
-    if (!env_enabled("DFLASH_FP_USE_BSA")) {
+    const bool use_coop = env_enabled("DFLASH_MEGA_PFLASH_COOP");
+    if (!env_enabled("DFLASH_FP_USE_BSA") && !use_coop) {
         const size_t fallback_needed =
             (size_t)S * ctx.max_seq_len + (size_t)std::min(S, 4096) * FA_HEAD_DIM;
         const size_t fallback_capacity = (size_t)S * DN_CONV_CH;
@@ -644,23 +663,44 @@ std::vector<int32_t> mega_pflash_score_and_compress(
     cudaStream_t stream = 0;
     cudaMemset(ctx.dn_states, 0, (size_t)18 * DN_HEADS * DN_KEY * DN_VAL * sizeof(float));
     cudaMemset(ctx.conv_bufs, 0, (size_t)18 * DN_CONV_CH * DN_CONV_K * sizeof(float));
-    launch_prefill_bf16(
-        ids_dev, S, (int *)ctx.output_token,
-        ctx.embed_weight, ctx.layer_weights_dev,
-        ctx.final_norm_weight, ctx.lm_head_weight,
-        ctx.fa_k_cache, ctx.fa_v_cache, ctx.dn_states, ctx.conv_bufs,
-        ctx.hidden, ctx.residual, ctx.normalized,
-        ctx.proj_buf, ctx.proj_buf2, ctx.attn_buf, ctx.mlp_buf,
-        ctx.dn_out_buf,
-        ctx.beta_buf, ctx.alpha_buf, ctx.dn_pre_qkv,
-        ctx.dn_u_scratch, ctx.dn_w_scratch, ctx.dn_cs_scratch,
-        ctx.fused_fa_qkv, ctx.fused_gate_up,
-        ctx.final_normed, ctx.hidden_bf16_out,
-        ctx.lm_bmv, ctx.lm_bmi,
-        ctx.fa_q_tail,
-        ctx.max_seq_len, tail_len,
-        stream,
-        &ctx.flashprefill_scratch);
+    if (use_coop) {
+#if DFLASH27B_MIN_SM >= 120
+        launch_prefill_bf16_mega(
+            ids_dev, S, ctx.max_seq_len, (int *)ctx.output_token,
+            ctx.embed_weight, ctx.layer_weights_dev,
+            ctx.final_norm_weight, ctx.lm_head_weight,
+            ctx.fa_k_cache, ctx.fa_v_cache, ctx.dn_states, ctx.conv_bufs,
+            ctx.hidden, ctx.residual, ctx.normalized,
+            ctx.proj_buf, ctx.proj_buf2, ctx.attn_buf, ctx.mlp_buf,
+            ctx.dn_out_buf,
+            ctx.beta_buf, ctx.alpha_buf,
+            ctx.fa_q_tail, tail_len,
+            ctx.final_normed, ctx.hidden_bf16_out,
+            ctx.lm_bmv, ctx.lm_bmi,
+            stream);
+#else
+        set_last_error("mega-pflash: cooperative megakernel requires SM120 build");
+        return {};
+#endif
+    } else {
+        launch_prefill_bf16(
+            ids_dev, S, (int *)ctx.output_token,
+            ctx.embed_weight, ctx.layer_weights_dev,
+            ctx.final_norm_weight, ctx.lm_head_weight,
+            ctx.fa_k_cache, ctx.fa_v_cache, ctx.dn_states, ctx.conv_bufs,
+            ctx.hidden, ctx.residual, ctx.normalized,
+            ctx.proj_buf, ctx.proj_buf2, ctx.attn_buf, ctx.mlp_buf,
+            ctx.dn_out_buf,
+            ctx.beta_buf, ctx.alpha_buf, ctx.dn_pre_qkv,
+            ctx.dn_u_scratch, ctx.dn_w_scratch, ctx.dn_cs_scratch,
+            ctx.fused_fa_qkv, ctx.fused_gate_up,
+            ctx.final_normed, ctx.hidden_bf16_out,
+            ctx.lm_bmv, ctx.lm_bmi,
+            ctx.fa_q_tail,
+            ctx.max_seq_len, tail_len,
+            stream,
+            &ctx.flashprefill_scratch);
+    }
     launch_mega_pflash_score(
         ctx.fa_q_tail, ctx.fa_k_cache, logit_scratch,
         token_scores, chunk_scores,
