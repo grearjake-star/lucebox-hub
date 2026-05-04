@@ -170,7 +170,7 @@ def summarize(name: str, rows: list[dict]) -> None:
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--target", type=Path, default=Path("/home/jake/models/Qwen3.6-27B-GGUF/Qwen3.6-27B-UD-Q5_K_XL.gguf"))
-    ap.add_argument("--draft", type=Path, default=Path("/home/jake/models/Qwen3.6-27B-DFlash-safetensors/model.safetensors"))
+    ap.add_argument("--draft", type=Path, default=Path("/home/jake/models/Qwen3.6-27B-DFlash-safetensors/draft-q8_0.gguf"))
     ap.add_argument("--bin", type=Path, default=ROOT / "build-luce-sm120/test_dflash")
     ap.add_argument("--drafter", type=Path, default=Path("/home/jake/models/Qwen3-0.6B-GGUF/Qwen3-0.6B-BF16.gguf"))
     ap.add_argument("--mega-native-model", type=Path,

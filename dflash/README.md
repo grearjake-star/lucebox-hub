@@ -6,8 +6,7 @@ Bare runtime for Qwen3.5/3.6 27B GGUF target inference with DFlash speculative d
 
 - Build arch: `sm_120`.
 - Target: `/home/jake/models/Qwen3.6-27B-GGUF/Qwen3.6-27B-UD-Q5_K_XL.gguf`.
-- DFlash draft: `/home/jake/models/Qwen3.6-27B-DFlash-safetensors/draft-q8_0.gguf`
-  when present, otherwise `/home/jake/models/Qwen3.6-27B-DFlash-safetensors/model.safetensors`.
+- DFlash draft: `/home/jake/models/Qwen3.6-27B-DFlash-safetensors/draft-q8_0.gguf`.
 - PFlash drafter: `/home/jake/models/Qwen3-0.6B-GGUF/Qwen3-0.6B-BF16.gguf`.
 - KV cache: `DFLASH27B_KV_K=f16`, `DFLASH27B_KV_V=f16`.
 - FA window: `DFLASH27B_FA_WINDOW=4096`.
@@ -36,15 +35,15 @@ cmake --build build-luce-sm120 --target test_dflash test_generate test_flashpref
 
 ## Quantized DFlash Draft
 
-The runtime accepts either the original BF16 safetensors draft or a Q8_0 GGUF
-draft. For Qwen3.6, build the Q8 draft from the local safetensors with
-`scripts/quantize_draft_q8.py`; it writes the required sliding-window metadata
-(`2048`, pattern `[S,S,S,S,F]`) while preserving the local draft weights.
+The runtime accepts only a quantized DFlash GGUF draft. For Qwen3.6, build the
+Q8 draft with `scripts/quantize_draft_q8.py`; it writes the required
+sliding-window metadata (`2048`, pattern `[S,S,S,S,F]`) while preserving the
+local draft weights.
 The runtime applies the SWA mask only when the draft context exceeds that
 window; short contexts keep the original full-attention draft path, which avoids
 unnecessary acceptance regressions on HumanEval-style prompts.
-Directory resolution prefers `draft-q8_0.gguf`, then any `.gguf`, then
-`model.safetensors`.
+Directory resolution accepts `draft-q8_0.gguf` or another explicit `.gguf`.
+There is no runtime safetensors fallback.
 
 Build the local Q8 draft:
 

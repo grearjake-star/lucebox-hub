@@ -1,8 +1,8 @@
-// Smoke test: load the z-lab DFlash draft safetensors/GGUF into a CUDA ggml
+// Smoke test: load the quantized DFlash draft GGUF into a CUDA ggml
 // context. Prints tensor count, total bytes, and a checksum-ish spot check
 // on one tensor. Exit 0 on success, nonzero on any failure.
 //
-// Usage: smoke_load_draft <path/to/model.safetensors|draft-q8_0.gguf>
+// Usage: smoke_load_draft <path/to/draft-q8_0.gguf>
 
 #include "dflash27b.h"
 #include "internal.h"
@@ -21,7 +21,7 @@ using namespace dflash27b;
 
 int main(int argc, char ** argv) {
     if (argc < 2) {
-        std::fprintf(stderr, "usage: %s <model.safetensors|draft-q8_0.gguf>\n", argv[0]);
+        std::fprintf(stderr, "usage: %s <draft-q8_0.gguf>\n", argv[0]);
         return 2;
     }
     const char * path = argv[1];

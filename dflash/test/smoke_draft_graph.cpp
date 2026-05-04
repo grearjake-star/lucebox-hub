@@ -8,7 +8,7 @@
 //   - a few representative values look reasonable (near-zero means for rms_norm output)
 //
 // Usage:
-//   smoke_draft_graph <draft.safetensors|draft-q8_0.gguf> [ctx_len]
+//   smoke_draft_graph <draft-q8_0.gguf> [ctx_len]
 //
 // ctx_len defaults to 64 to keep the first run tiny.
 
@@ -72,7 +72,7 @@ static void build_draft_swa_mask(std::vector<uint16_t> & out,
 
 int main(int argc, char ** argv) {
     if (argc < 2) {
-        std::fprintf(stderr, "usage: %s <model.safetensors|draft-q8_0.gguf> [ctx_len]\n", argv[0]);
+        std::fprintf(stderr, "usage: %s <draft-q8_0.gguf> [ctx_len]\n", argv[0]);
         return 2;
     }
     const char * path = argv[1];

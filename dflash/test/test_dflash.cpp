@@ -15,7 +15,7 @@
 //         cleanly advanced only by what was committed.
 //      f. Update committed, last_tok.
 //
-// Usage: test_dflash <target.gguf> <draft.safetensors> <prompt_ids.bin>
+// Usage: test_dflash <target.gguf> <draft-q8_0.gguf> <prompt_ids.bin>
 //                    <n_gen> <out_ids.bin>
 
 #include "dflash27b.h"
@@ -896,7 +896,7 @@ static bool build_draft_step(
 int main(int argc, char ** argv) {
     if (argc < 3) {
         std::fprintf(stderr,
-            "usage: %s <target.gguf> <draft.safetensors> [<prompt_ids.bin> <n_gen> <out_ids.bin>] [--daemon] [-ctk <type>] [-ctv <type>] ...\n", argv[0]);
+            "usage: %s <target.gguf> <draft-q8_0.gguf> [<prompt_ids.bin> <n_gen> <out_ids.bin>] [--daemon] [-ctk <type>] [-ctv <type>] ...\n", argv[0]);
         return 2;
     }
     // TurboQuant FA kernel requires kv_len aligned to FATTN_KQ_STRIDE=256.

@@ -51,14 +51,16 @@ MODEL_NAME = "luce-dflash"
 
 
 def resolve_draft(root: Path) -> Path:
+    if root.is_file():
+        if root.suffix == ".gguf":
+            return root
+        raise FileNotFoundError(f"DFlash runtime requires a quantized GGUF draft, not {root}")
     preferred = root / "draft-q8_0.gguf"
     if preferred.is_file():
         return preferred
     for gguf in root.rglob("*.gguf"):
         return gguf
-    for st in root.rglob("model.safetensors"):
-        return st
-    raise FileNotFoundError(f"no draft GGUF or model.safetensors under {root}")
+    raise FileNotFoundError(f"no draft GGUF under {root}")
 
 
 _QWEN35_FAMILY_TOKENIZERS = {
@@ -805,7 +807,7 @@ def main():
         raise SystemExit(f"binary not found at {args.bin}")
     if not args.target.is_file():
         raise SystemExit(f"target GGUF not found at {args.target}")
-    draft = resolve_draft(args.draft) if args.draft.is_dir() else args.draft
+    draft = resolve_draft(args.draft)
     if not draft.is_file():
         raise SystemExit(f"draft model not found at {args.draft}")
 

@@ -23,7 +23,6 @@ TARGET = os.environ.get(
     "DFLASH_TARGET",
     str(ROOT / "models" / "Qwen3.6-27B-Q4_K_M.gguf"),
 )
-_LOCAL_DRAFT_FILE = ROOT / "models" / "draft" / "model.safetensors"
 _LOCAL_DRAFT_Q8 = ROOT / "models" / "draft" / "draft-q8_0.gguf"
 _LOCAL_DRAFT_ROOT = ROOT / "models" / "draft"
 DRAFT = None
@@ -181,7 +180,7 @@ PROMPTS = [
 
 def _find_draft_model(root: Path) -> str | None:
     if root.is_file():
-        return str(root)
+        return str(root) if root.suffix == ".gguf" else None
     if not root.is_dir():
         return None
     preferred = root / "draft-q8_0.gguf"
@@ -189,8 +188,6 @@ def _find_draft_model(root: Path) -> str | None:
         return str(preferred)
     for gguf in root.rglob("*.gguf"):
         return str(gguf)
-    for st in root.rglob("model.safetensors"):
-        return str(st)
     return None
 
 
@@ -202,16 +199,15 @@ def _resolve_draft() -> str:
             return found
         raise FileNotFoundError(f"DFLASH_DRAFT does not point to a draft model: {env}")
 
-    for candidate in (_LOCAL_DRAFT_Q8, _LOCAL_DRAFT_FILE, _LOCAL_DRAFT_ROOT):
+    for candidate in (_LOCAL_DRAFT_Q8, _LOCAL_DRAFT_ROOT):
         found = _find_draft_model(candidate)
         if found:
             return found
 
     raise FileNotFoundError(
-        "draft GGUF/model.safetensors not found. Expected one of:\n"
+        "draft GGUF not found. Expected one of:\n"
         f"  - {_LOCAL_DRAFT_Q8}\n"
-        f"  - {_LOCAL_DRAFT_FILE}\n"
-        "Download it as documented in the README, or set DFLASH_DRAFT to an explicit file or directory."
+        "Build it as documented in the README, or set DFLASH_DRAFT to an explicit .gguf file or directory."
     )
 
 

@@ -29,12 +29,17 @@ SYSTEM = "You are a concise, helpful assistant."
 
 def resolve_draft() -> Path:
     if DRAFT_ROOT.is_file():
-        return DRAFT_ROOT
+        if DRAFT_ROOT.suffix == ".gguf":
+            return DRAFT_ROOT
+        sys.exit(f"DFlash runtime requires a quantized GGUF draft, not {DRAFT_ROOT}")
     if DRAFT_ROOT.is_dir():
-        for st in DRAFT_ROOT.rglob("model.safetensors"):
-            return st
+        preferred = DRAFT_ROOT / "draft-q8_0.gguf"
+        if preferred.is_file():
+            return preferred
+        for gguf in DRAFT_ROOT.rglob("*.gguf"):
+            return gguf
     sys.exit(
-        f"draft weights not found under {DRAFT_ROOT}. Download them as documented in the README."
+        f"draft GGUF not found under {DRAFT_ROOT}. Build draft-q8_0.gguf as documented in the README."
     )
 
 

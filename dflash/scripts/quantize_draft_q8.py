@@ -122,8 +122,6 @@ def main():
                     help="Input BF16 safetensors (e.g. models/draft/model.safetensors)")
     ap.add_argument("out_gguf", type=Path,
                     help="Output Q8_0 GGUF (e.g. models/draft/draft-q8_0.gguf)")
-    ap.add_argument("--no-swa", action="store_true",
-                    help="Do not write Qwen3.6 DFlash sliding-window metadata")
     args = ap.parse_args()
 
     if not args.safetensors.exists():
@@ -156,9 +154,8 @@ def main():
     writer.add_uint32(f"{ARCH}.dflash.n_target_layers", N_TARGET_LAYERS)
     writer.add_uint32(f"{ARCH}.dflash.block_size",      BLOCK_SIZE)
     writer.add_uint32(f"{ARCH}.dflash.mask_token_id",   MASK_TOKEN_ID)
-    if not args.no_swa:
-        writer.add_sliding_window(SLIDING_WINDOW)
-        writer.add_sliding_window_pattern(SLIDING_PATTERN)
+    writer.add_sliding_window(SLIDING_WINDOW)
+    writer.add_sliding_window_pattern(SLIDING_PATTERN)
 
     # Collect and sort tensors (same order as convert_dflash_to_gguf.py)
     pending = []

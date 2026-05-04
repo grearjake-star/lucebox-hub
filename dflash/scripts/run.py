@@ -31,11 +31,13 @@ def default_paths():
 
 
 def resolve_draft(draft_dir: str) -> str:
-    if draft_dir.endswith((".safetensors", ".gguf")):
+    if draft_dir.endswith(".gguf"):
         p = Path(draft_dir)
         if p.is_file():
             return str(p)
         raise FileNotFoundError(f"draft model not found: {draft_dir}")
+    if draft_dir.endswith(".safetensors"):
+        raise FileNotFoundError(f"DFlash runtime requires a quantized GGUF draft, not safetensors: {draft_dir}")
 
     p = Path(draft_dir)
     if p.is_file():
@@ -46,11 +48,9 @@ def resolve_draft(draft_dir: str) -> str:
             return str(preferred)
         for gguf in p.rglob("*.gguf"):
             return str(gguf)
-        for st in p.rglob("model.safetensors"):
-            return str(st)
 
     raise FileNotFoundError(
-        f"no draft GGUF or model.safetensors under {draft_dir}. Download it as documented in the README, or pass --draft explicitly."
+        f"no draft GGUF under {draft_dir}. Build draft-q8_0.gguf as documented in the README, or pass --draft explicitly."
     )
 
 

@@ -146,8 +146,6 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("safetensors", type=Path)
     ap.add_argument("out_gguf",     type=Path)
-    ap.add_argument("--no-swa", action="store_true",
-                    help="Do not write Qwen3.6 DFlash sliding-window metadata")
     args = ap.parse_args()
 
     if not args.safetensors.exists():
@@ -182,9 +180,8 @@ def main():
     writer.add_uint32(f"{ARCH}.dflash.n_target_layers", N_TARGET_LAYERS)
     writer.add_uint32(f"{ARCH}.dflash.block_size",      BLOCK_SIZE)
     writer.add_uint32(f"{ARCH}.dflash.mask_token_id",   MASK_TOKEN_ID)
-    if not args.no_swa:
-        writer.add_sliding_window(SLIDING_WINDOW)
-        writer.add_sliding_window_pattern(SLIDING_PATTERN)
+    writer.add_sliding_window(SLIDING_WINDOW)
+    writer.add_sliding_window_pattern(SLIDING_PATTERN)
 
     # Walk + add tensors. Sort: dflash.* singletons first, then output_*,
     # then per-layer in numeric order — keeps the on-disk layout stable.

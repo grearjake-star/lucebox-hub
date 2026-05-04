@@ -57,7 +57,6 @@ add_library(dflash27b STATIC
     src/errors.cpp
     src/gguf_target_loader.cpp
     src/gguf_draft_loader.cpp
-    src/safetensors_draft.cpp
     src/qwen35_target_graph.cpp
     src/qwen3_dflash_graph.cpp
     src/qwen3_drafter.cpp
@@ -102,9 +101,8 @@ else()
 endif()
 set_target_properties(dflash27b PROPERTIES CUDA_ARCHITECTURES "${_dflash27b_archs}")
 
-# Extract the minimum SM from the arch list so safetensors_draft.cpp can decide
-# at compile time whether to convert BF16 draft weights to FP16 (cuBLAS BF16
-# GEMM has no tensor core acceleration on SM < 80).
+# Extract the minimum SM from the arch list for kernels that need compile-time
+# SM gating.
 list(GET _dflash27b_archs 0 _dflash27b_min_sm)
 # Strip any trailing 'a' suffix (e.g. "121a" → "121")
 string(REGEX REPLACE "[^0-9]" "" _dflash27b_min_sm "${_dflash27b_min_sm}")
@@ -244,11 +242,6 @@ if(DFLASH27B_TESTS)
         add_executable(smoke_bsa_hdim256 test/smoke_bsa_hdim256.cpp)
         target_include_directories(smoke_bsa_hdim256 PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
         target_link_libraries(smoke_bsa_hdim256 PRIVATE dflash27b CUDA::cudart)
-    endif()
-    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test/test_vs_oracle.cpp")
-        add_executable(test_vs_oracle test/test_vs_oracle.cpp)
-        target_include_directories(test_vs_oracle PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
-        target_link_libraries(test_vs_oracle PRIVATE dflash27b ggml ggml-cuda)
     endif()
     if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test/smoke_load_target.cpp")
         add_executable(smoke_load_target test/smoke_load_target.cpp)

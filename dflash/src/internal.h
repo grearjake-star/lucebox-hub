@@ -142,7 +142,7 @@ bool load_target_gguf(const std::string & path,
 
 void free_target_weights(TargetWeights & w);
 
-// ─── Draft weights (z-lab DFlash, bf16) ───────────────────────────
+// ─── Draft weights (quantized DFlash GGUF) ────────────────────────
 
 struct DraftLayer {
     ggml_tensor * attn_norm;
@@ -176,24 +176,18 @@ struct DraftWeights {
     int n_embd    = DFLASH27B_TARGET_HIDDEN;           // 5120
     int n_ff      = DFLASH27B_TARGET_INTERMEDIATE;     // 17408
 
-    // Qwen3.6 DFlash drafts use causal sliding-window attention on a subset
-    // of layers (usually [S,S,S,S,F], window 2048). Older 3.5 drafts omit this.
+    // Qwen3.6 DFlash GGUF drafts use causal sliding-window attention on a
+    // subset of layers (usually [S,S,S,S,F], window 2048).
     int sliding_window = 0;
     std::vector<uint8_t> layer_is_swa;
 };
 
-bool load_draft_safetensors(const std::string & path,
-                            ggml_backend_t backend,
-                            DraftWeights & out);
-
 // Load a Q8_0 (or F16) draft model from a GGUF file on disk.
-// Alternative to load_draft_safetensors for quantized drafts.
 bool load_draft_gguf(const std::string & path,
                      ggml_backend_t backend,
                      DraftWeights & out);
 
-// Auto-detect by extension: .gguf uses load_draft_gguf(), everything else
-// uses the legacy safetensors loader.
+// Production DFlash draft loader. Only quantized GGUF drafts are accepted.
 bool load_draft_model(const std::string & path,
                       ggml_backend_t backend,
                       DraftWeights & out);
