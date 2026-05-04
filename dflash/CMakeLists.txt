@@ -177,6 +177,11 @@ target_link_libraries(dflash27b
 
 target_compile_definitions(dflash27b PRIVATE TARGET_SM=${_dflash27b_min_sm})
 
+if(_dflash27b_min_sm GREATER_EQUAL 120)
+    target_sources(dflash27b PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/../megakernel/prefill_megakernel.cu)
+endif()
+
 if (CMAKE_CXX_COMPILER_ID STREQUAL "GNU" OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
      target_compile_options(dflash27b PRIVATE
          $<$<COMPILE_LANGUAGE:CXX>:-Wall -Wextra -Wno-unused-parameter -Wno-unused-function>
@@ -237,6 +242,11 @@ if(DFLASH27B_TESTS)
         add_executable(smoke_mega_pflash_native test/smoke_mega_pflash_native.cpp)
         target_include_directories(smoke_mega_pflash_native PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
         target_link_libraries(smoke_mega_pflash_native PRIVATE dflash27b ggml ggml-cuda CUDA::cudart)
+    endif()
+    if(_dflash27b_min_sm GREATER_EQUAL 120 AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test/smoke_prefill_megakernel.cpp")
+        add_executable(smoke_prefill_megakernel test/smoke_prefill_megakernel.cpp)
+        target_include_directories(smoke_prefill_megakernel PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+        target_link_libraries(smoke_prefill_megakernel PRIVATE dflash27b CUDA::cudart)
     endif()
     if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test/smoke_bsa_hdim256.cpp")
         add_executable(smoke_bsa_hdim256 test/smoke_bsa_hdim256.cpp)
