@@ -6,6 +6,7 @@
 //   - target_hidden_cat   [5*hidden, ctx_len, 1] bf16   (5 target layers concat along features)
 //   - positions_q         [q_len]                i32    values [ctx_len..ctx_len+q_len-1]
 //   - positions_k         [ctx_len+q_len]        i32    values [0..ctx_len+q_len-1]
+//   - swa_mask            [ctx_len+q_len, q_len] f16    optional Qwen3.6 SWA mask
 // and returns:
 //   - hidden_states       [hidden,   q_len, 1]   bf16   (final RMSNorm; NO lm_head here)
 //
@@ -22,7 +23,8 @@
 //       K = concat[K_ctx, K_noi]  -> per-head k_norm
 //       V = concat[V_ctx, V_noi]
 //       RoPE(Q, positions_q); RoPE(K, positions_k)    (NEOX style, theta=10M)
-//       attn = flash_attn_ext(Q, K, V, mask=null, scale=1/sqrt(head_dim))   non-causal
+//       attn = flash_attn_ext(Q, K, V, mask, scale=1/sqrt(head_dim))
+//              mask=null for full layers, causal SWA mask for Qwen3.6 SWA layers
 //       h   += wo @ attn
 //       h_norm = rms_norm(h) * post_attention_layernorm
 //       h   += w_down @ (silu(w_gate @ h_norm) * (w_up @ h_norm))
@@ -117,9 +119,15 @@ DraftGraphOutputs build_draft_graph(
         V = ggml_permute(ctx, V, 0, 2, 1, 3);  // [head_dim, total_k,  n_kv,   1]
         V = ggml_cont   (ctx, V);
 
-        // ── 2f. Non-causal flash attention; GQA broadcast handled internally.
+        // ── 2f. Flash attention; GQA broadcast handled internally.
+        // Qwen3.6 DFlash drafts mark some layers as causal sliding-window
+        // attention. Older 3.5 drafts leave layer_is_swa empty/all-zero and
+        // keep the original non-causal full-attention behavior.
         const float scale = 1.0f / std::sqrt((float)head_dim);
-        ggml_tensor * attn = ggml_flash_attn_ext(ctx, Q, K, V, /*mask=*/nullptr,
+        const bool use_swa = il < (int)w.layer_is_swa.size() &&
+                             w.layer_is_swa[il] && in.swa_mask != nullptr;
+        ggml_tensor * attn = ggml_flash_attn_ext(ctx, Q, K, V,
+                                                 use_swa ? in.swa_mask : nullptr,
                                                  scale, /*max_bias=*/0.0f,
                                                  /*logit_softcap=*/0.0f);
         // attn result: [n_embd_v=head_dim, n_head, n_batch=q_len, 1]

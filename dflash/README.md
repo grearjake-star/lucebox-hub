@@ -6,7 +6,8 @@ Bare runtime for Qwen3.5/3.6 27B GGUF target inference with DFlash speculative d
 
 - Build arch: `sm_120`.
 - Target: `/home/jake/models/Qwen3.6-27B-GGUF/Qwen3.6-27B-UD-Q5_K_XL.gguf`.
-- DFlash draft: `/home/jake/models/Qwen3.6-27B-DFlash-safetensors/model.safetensors`.
+- DFlash draft: `/home/jake/models/Qwen3.6-27B-DFlash-safetensors/draft-q8_0.gguf`
+  when present, otherwise `/home/jake/models/Qwen3.6-27B-DFlash-safetensors/model.safetensors`.
 - PFlash drafter: `/home/jake/models/Qwen3-0.6B-GGUF/Qwen3-0.6B-BF16.gguf`.
 - KV cache: `DFLASH27B_KV_K=f16`, `DFLASH27B_KV_V=f16`.
 - FA window: `DFLASH27B_FA_WINDOW=4096`.
@@ -33,6 +34,31 @@ cmake -B build-luce-sm120 -S . \
 cmake --build build-luce-sm120 --target test_dflash test_generate test_flashprefill_kernels -j 8
 ```
 
+## Quantized DFlash Draft
+
+The runtime accepts either the original BF16 safetensors draft or a Q8_0 GGUF
+draft. For Qwen3.6, use the buun `dflash-draft-3.6-q8_0.gguf` build because
+it carries the required sliding-window metadata (`2048`, pattern `[S,S,S,S,F]`).
+Directory resolution prefers `draft-q8_0.gguf`, then any `.gguf`, then
+`model.safetensors`.
+
+Fetch the buun Q8 draft:
+
+```bash
+wget -O \
+  /home/jake/models/Qwen3.6-27B-DFlash-safetensors/draft-q8_0.gguf \
+  https://huggingface.co/spiritbuun/Qwen3.6-27B-DFlash-GGUF/resolve/main/dflash-draft-3.6-q8_0.gguf
+```
+
+Smoke-load and run a tiny draft graph:
+
+```bash
+./build-luce-sm120/smoke_load_draft \
+  /home/jake/models/Qwen3.6-27B-DFlash-safetensors/draft-q8_0.gguf
+./build-luce-sm120/smoke_draft_graph \
+  /home/jake/models/Qwen3.6-27B-DFlash-safetensors/draft-q8_0.gguf 8
+```
+
 ## Mega PFlash Server
 
 The default PFlash backend is still the daemon-backed Qwen3-0.6B path. The
@@ -42,7 +68,7 @@ native Qwen3.5-0.8B Mega PFlash backend is opt-in and runs inside the
 ```bash
 python scripts/server_tools.py \
   --target /home/jake/models/Qwen3.6-27B-GGUF/Qwen3.6-27B-UD-Q5_K_XL.gguf \
-  --draft /home/jake/models/Qwen3.6-27B-DFlash-safetensors/model.safetensors \
+  --draft /home/jake/models/Qwen3.6-27B-DFlash-safetensors/draft-q8_0.gguf \
   --bin /home/jake/lucebox-hub/dflash/build-luce-sm120/test_dflash \
   --budget 22 \
   --max-ctx 8192 \
@@ -74,7 +100,7 @@ DFLASH_FP_USE_BSA=1 DFLASH_FP_PROFILE=1 ./build-luce-sm120/smoke_mega_pflash_nat
 
 ```bash
 DFLASH_TARGET=/home/jake/models/Qwen3.6-27B-GGUF/Qwen3.6-27B-UD-Q5_K_XL.gguf \
-DFLASH_DRAFT=/home/jake/models/Qwen3.6-27B-DFlash-safetensors/model.safetensors \
+DFLASH_DRAFT=/home/jake/models/Qwen3.6-27B-DFlash-safetensors/draft-q8_0.gguf \
 DFLASH_BIN=/home/jake/lucebox-hub/dflash/build-luce-sm120/test_dflash \
 DFLASH_BIN_AR=/home/jake/lucebox-hub/dflash/build-luce-sm120/test_generate \
 DFLASH27B_KV_K=f16 \

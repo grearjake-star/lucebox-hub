@@ -388,6 +388,8 @@ bool load_draft_safetensors(const std::string & path,
     out.n_embd    = DFLASH27B_TARGET_HIDDEN;
     out.n_ff      = DFLASH27B_TARGET_INTERMEDIATE;
     out.layers.assign(n_layers, DraftLayer{});
+    out.sliding_window = 0;
+    out.layer_is_swa.assign(n_layers, 0);
 
     const int64_t HIDDEN  = out.n_embd;
     const int64_t Q_DIM   = out.n_head * out.head_dim;
@@ -505,6 +507,7 @@ void free_draft_weights(DraftWeights & w) {
     if (w.buf) { ggml_backend_buffer_free(w.buf); w.buf = nullptr; }
     if (w.ctx) { ggml_free(w.ctx);                w.ctx = nullptr; }
     w.layers.clear();
+    w.layer_is_swa.clear();
     w.fc = nullptr;
     w.hidden_norm = nullptr;
     w.out_norm = nullptr;

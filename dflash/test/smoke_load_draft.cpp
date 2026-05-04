@@ -1,8 +1,8 @@
-// Smoke test: load the z-lab DFlash draft safetensors into a CUDA ggml
+// Smoke test: load the z-lab DFlash draft safetensors/GGUF into a CUDA ggml
 // context. Prints tensor count, total bytes, and a checksum-ish spot check
 // on one tensor. Exit 0 on success, nonzero on any failure.
 //
-// Usage: smoke_load_draft <path/to/model.safetensors>
+// Usage: smoke_load_draft <path/to/model.safetensors|draft-q8_0.gguf>
 
 #include "dflash27b.h"
 #include "internal.h"
@@ -21,7 +21,7 @@ using namespace dflash27b;
 
 int main(int argc, char ** argv) {
     if (argc < 2) {
-        std::fprintf(stderr, "usage: %s <model.safetensors>\n", argv[0]);
+        std::fprintf(stderr, "usage: %s <model.safetensors|draft-q8_0.gguf>\n", argv[0]);
         return 2;
     }
     const char * path = argv[1];
@@ -35,8 +35,8 @@ int main(int argc, char ** argv) {
     std::printf("cuda backend: %s\n", ggml_backend_name(backend));
 
     DraftWeights w;
-    if (!load_draft_safetensors(path, backend, w)) {
-        std::fprintf(stderr, "load_draft_safetensors failed: %s\n",
+    if (!load_draft_model(path, backend, w)) {
+        std::fprintf(stderr, "load_draft_model failed: %s\n",
                      dflash27b_last_error());
         ggml_backend_free(backend);
         return 1;
@@ -62,20 +62,19 @@ int main(int argc, char ** argv) {
     std::printf("layers[0].wq: ne=[%" PRId64 ", %" PRId64 "] type=%s\n",
                 w.layers[0].wq->ne[0], w.layers[0].wq->ne[1],
                 ggml_type_name(w.layers[0].wq->type));
+    std::printf("sliding_window=%d layer_is_swa=", w.sliding_window);
+    for (size_t i = 0; i < w.layer_is_swa.size(); ++i) {
+        std::printf("%s%d", i ? "," : "", (int)w.layer_is_swa[i]);
+    }
+    std::printf("\n");
 
-    // Pull a few bytes of `norm.weight` back from CUDA and print a few values,
+    // Pull a few bytes of `hidden_norm.weight` back from CUDA and print a few values,
     // as a proof of end-to-end data path (file → mmap → CUDA → host).
-    std::vector<uint16_t> hn(w.hidden_norm->ne[0]);
-    ggml_backend_tensor_get(w.hidden_norm, hn.data(), 0, sizeof(uint16_t) * hn.size());
-    auto bf16_to_f32 = [](uint16_t u) {
-        uint32_t bits = ((uint32_t)u) << 16;
-        float f;
-        std::memcpy(&f, &bits, 4);
-        return f;
-    };
+    std::vector<float> hn(w.hidden_norm->ne[0]);
+    ggml_backend_tensor_get(w.hidden_norm, hn.data(), 0, sizeof(float) * hn.size());
     std::printf("hidden_norm.weight first 8 values: ");
     for (int i = 0; i < 8 && i < (int)hn.size(); i++) {
-        std::printf("%.4f ", bf16_to_f32(hn[i]));
+        std::printf("%.4f ", hn[i]);
     }
     std::printf("\n");
 

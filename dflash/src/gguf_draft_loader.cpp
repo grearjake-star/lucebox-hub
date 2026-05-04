@@ -25,11 +25,13 @@
 
 #include "internal.h"
 
+#include <algorithm>
 #include <cinttypes>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
 #include <string>
+#include <vector>
 
 #if !defined(_WIN32)
 #include <cerrno>
@@ -106,6 +108,34 @@ uint32_t get_u32_or(const gguf_context * g, const char * key, uint32_t fallback)
     return gguf_get_val_u32(g, id);
 }
 
+bool get_bool_pattern(const gguf_context * g, const char * key,
+                      uint32_t n_layer, std::vector<uint8_t> & out) {
+    int64_t id = gguf_find_key(g, key);
+    if (id < 0) return false;
+
+    out.assign(n_layer, 0);
+    const gguf_type type = gguf_get_kv_type(g, id);
+    if (type == GGUF_TYPE_UINT32) {
+        const uint32_t period = gguf_get_val_u32(g, id);
+        if (period == 0) return true;
+        for (uint32_t i = 0; i < n_layer; ++i) {
+            out[i] = ((i + 1) % period) != 0;
+        }
+        return true;
+    }
+    if (type != GGUF_TYPE_ARRAY ||
+        gguf_get_arr_type(g, id) != GGUF_TYPE_BOOL ||
+        gguf_get_arr_n(g, id) < n_layer) {
+        return false;
+    }
+
+    const int8_t * data = (const int8_t *)gguf_get_arr_data(g, id);
+    for (uint32_t i = 0; i < n_layer; ++i) {
+        out[i] = data[i] != 0;
+    }
+    return true;
+}
+
 } // namespace
 
 bool load_draft_gguf(const std::string & path,
@@ -132,16 +162,18 @@ bool load_draft_gguf(const std::string & path,
             return false;
         }
         const char * arch = gguf_get_val_str(gctx, arch_id);
-        if (std::string(arch) != "qwen35-dflash-draft") {
+        if (std::string(arch) != "qwen35-dflash-draft" &&
+            std::string(arch) != "dflash-draft") {
             set_last_error(std::string("unexpected draft arch: ") + arch +
-                           " (expected qwen35-dflash-draft)");
+                           " (expected qwen35-dflash-draft or dflash-draft)");
             gguf_free(gctx);
             return false;
         }
     }
 
     // Read dimensions from GGUF metadata
-    const char * A = "qwen35-dflash-draft";
+    int64_t arch_id = gguf_find_key(gctx, "general.architecture");
+    const char * A = gguf_get_val_str(gctx, arch_id);
     char key[128];
 
     auto read_u32 = [&](const char * suffix, uint32_t fallback) -> uint32_t {
@@ -156,7 +188,14 @@ bool load_draft_gguf(const std::string & path,
     const uint32_t n_head_kv = read_u32("attention.head_count_kv", 0);
     const uint32_t head_dim  = read_u32("attention.key_length",    0);
     const uint32_t block_sz  = read_u32("dflash.block_size",       0);
-    const uint32_t n_tgt_lay = read_u32("dflash.n_target_layers",  0);
+    uint32_t n_tgt_lay = read_u32("dflash.n_target_layers",  0);
+    if (n_tgt_lay == 0) {
+        const uint32_t n_tgt_features = read_u32("dflash.n_target_features", 0);
+        if (n_tgt_features > 0 && n_embd > 0 && (n_tgt_features % n_embd) == 0) {
+            n_tgt_lay = n_tgt_features / n_embd;
+        }
+    }
+    const uint32_t n_swa     = read_u32("attention.sliding_window", 0);
 
     if (n_embd == 0 || n_layer == 0 || n_ff == 0 || n_head == 0 ||
         n_head_kv == 0 || head_dim == 0) {
@@ -219,13 +258,28 @@ bool load_draft_gguf(const std::string & path,
     out.n_embd    = (int)n_embd;
     out.n_ff      = (int)n_ff;
     out.layers.assign((size_t)n_layer, DraftLayer{});
+    out.sliding_window = (int)n_swa;
+    out.layer_is_swa.assign((size_t)n_layer, 0);
+    if (n_swa > 0) {
+        std::snprintf(key, sizeof(key), "%s.%s", A, "attention.sliding_window_pattern");
+        if (!get_bool_pattern(gctx, key, n_layer, out.layer_is_swa)) {
+            // Qwen3.6 DFlash's published pattern is [S,S,S,S,F]. If a GGUF
+            // has a window but omits the pattern, match llama.cpp's optional
+            // fallback by treating every layer as SWA.
+            std::fill(out.layer_is_swa.begin(), out.layer_is_swa.end(), 1);
+        }
+    }
 
     auto g = [&](const char * name) -> ggml_tensor * {
         return ggml_get_tensor(meta_ctx, name);
     };
+    auto g2 = [&](const char * a, const char * b) -> ggml_tensor * {
+        ggml_tensor * t = ggml_get_tensor(meta_ctx, a);
+        return t ? t : ggml_get_tensor(meta_ctx, b);
+    };
 
-    out.fc          = g("dflash.fc.weight");
-    out.hidden_norm = g("dflash.hidden_norm.weight");
+    out.fc          = g2("dflash.fc.weight", "dflash_fc.weight");
+    out.hidden_norm = g2("dflash.hidden_norm.weight", "dflash_hidden_norm.weight");
     out.out_norm    = g("output_norm.weight");
     if (!out.fc || !out.hidden_norm || !out.out_norm) {
         set_last_error("draft GGUF: missing top-level tensors "
@@ -243,6 +297,7 @@ bool load_draft_gguf(const std::string & path,
         DraftLayer & L = out.layers[il];
         L.attn_norm = fnd("attn_norm.weight");
         L.ffn_norm  = fnd("ffn_norm.weight");
+        if (!L.ffn_norm) L.ffn_norm = fnd("post_attention_norm.weight");
         L.wq        = fnd("attn_q.weight");
         L.wk        = fnd("attn_k.weight");
         L.wv        = fnd("attn_v.weight");
@@ -302,6 +357,15 @@ bool load_draft_gguf(const std::string & path,
     set_last_error(summary);
 
     return true;
+}
+
+bool load_draft_model(const std::string & path,
+                      ggml_backend_t       backend,
+                      DraftWeights &       out) {
+    if (path.size() >= 5 && path.substr(path.size() - 5) == ".gguf") {
+        return load_draft_gguf(path, backend, out);
+    }
+    return load_draft_safetensors(path, backend, out);
 }
 
 } // namespace dflash27b

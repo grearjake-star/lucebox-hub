@@ -188,6 +188,28 @@ static void build_causal_mask(std::vector<uint16_t> & out,
     }
 }
 
+static void build_draft_swa_mask(std::vector<uint16_t> & out,
+                                 int ctx_len, int q_len, int window) {
+    const int total_k = ctx_len + q_len;
+    const int q_pad = align_up(q_len, KQ_MASK_PAD);
+    out.assign((size_t)total_k * q_pad, F16_NEG_INF);
+    for (int q = 0; q < q_len; ++q) {
+        const int q_pos = ctx_len + q;
+        for (int k = 0; k < total_k; ++k) {
+            bool keep = false;
+            if (k < ctx_len) {
+                keep = (q_pos - k) <= window;
+            } else {
+                const int block_k = k - ctx_len;
+                keep = block_k <= q;
+            }
+            if (keep) {
+                out[(size_t)q * total_k + k] = F16_ZERO;
+            }
+        }
+    }
+}
+
 // ─── DDTree support (ported from liranringel/ddtree/ddtree.py) ────────
 
 // Per-position top-K softmax extraction. Computes log-probabilities (needed
@@ -509,7 +531,7 @@ struct StepGraph {
     // Named inputs (look up via ggml_get_tensor by name)
     ggml_tensor *   inp_embed = nullptr;
     ggml_tensor *   positions = nullptr;
-    ggml_tensor *   attn_mask = nullptr;     // may be null
+    ggml_tensor *   attn_mask = nullptr;     // may be null; target or draft SWA mask
     ggml_tensor *   parent_ids = nullptr;    // DDTree tree-mode; null for chain mode
     ggml_tensor *   target_hidden_cat = nullptr;  // draft only
     ggml_tensor *   positions_k = nullptr;        // draft only
@@ -832,6 +854,13 @@ static bool build_draft_step(
     ggml_set_name(sg.positions_k, "positions_k");
     ggml_set_input(sg.positions_k);
 
+    if (dw.sliding_window > 0) {
+        const int q_pad = align_up(q_len, KQ_MASK_PAD);
+        sg.attn_mask = ggml_new_tensor_2d(sg.ctx, GGML_TYPE_F16, ctx_len + q_len, q_pad);
+        ggml_set_name(sg.attn_mask, "draft_swa_mask");
+        ggml_set_input(sg.attn_mask);
+    }
+
     sg.gf = ggml_new_graph_custom(sg.ctx, 4096, false);
 
     DraftGraphInputs gi{};
@@ -840,6 +869,7 @@ static bool build_draft_step(
     gi.target_hidden_cat = sg.target_hidden_cat;
     gi.positions_q       = sg.positions;
     gi.positions_k       = sg.positions_k;
+    gi.swa_mask          = sg.attn_mask;
     gi.lm_head           = tw.output;     // project through target.output (q6_K)
     DraftGraphOutputs go = build_draft_graph(sg.ctx, dw, gi);
     if (!go.logits) {
@@ -1015,15 +1045,7 @@ int main(int argc, char ** argv) {
 
     DraftWeights dw;
     {
-        // Auto-detect draft format: .gguf → GGUF loader, else safetensors.
-        std::string dp(draft_path);
-        bool draft_ok = false;
-        if (dp.size() >= 5 && dp.substr(dp.size() - 5) == ".gguf") {
-            draft_ok = load_draft_gguf(draft_path, backend, dw);
-        } else {
-            draft_ok = load_draft_safetensors(draft_path, backend, dw);
-        }
-        if (!draft_ok) {
+        if (!load_draft_model(draft_path, backend, dw)) {
             std::fprintf(stderr, "draft load: %s\n", dflash27b_last_error());
             return 1;
         }
@@ -1395,7 +1417,7 @@ int main(int argc, char ** argv) {
                     std::printf("[unpark] target restored\n"); std::fflush(stdout);
                 }
                 if (want_draft && draft_parked) {
-                    if (!load_draft_safetensors(draft_path, backend, dw)) {
+                    if (!load_draft_model(draft_path, backend, dw)) {
                         std::fprintf(stderr, "[unpark] draft: %s\n", dflash27b_last_error());
                         stream_emit(-1); continue;
                     }
@@ -1483,7 +1505,7 @@ int main(int argc, char ** argv) {
                     std::printf("[compress] target restored\n"); std::fflush(stdout);
                 }
                 if (restore_draft) {
-                    if (!load_draft_safetensors(draft_path, backend, dw)) {
+                    if (!load_draft_model(draft_path, backend, dw)) {
                         std::fprintf(stderr, "[compress] draft restore: %s\n",
                                      dflash27b_last_error());
                         stream_emit(-1); continue;
@@ -2177,6 +2199,11 @@ int main(int argc, char ** argv) {
         for (int i = 0; i < draft_ctx + q_len; i++) pos_k_buf[i] = i;
         ggml_backend_tensor_set(sg.positions,   pos_q_buf.data(), 0, sizeof(int32_t) * q_len);
         ggml_backend_tensor_set(sg.positions_k, pos_k_buf.data(), 0, sizeof(int32_t) * (draft_ctx + q_len));
+        if (sg.attn_mask) {
+            build_draft_swa_mask(mask_buf, draft_ctx, q_len, dw.sliding_window);
+            ggml_backend_tensor_set(sg.attn_mask, mask_buf.data(), 0,
+                                    sizeof(uint16_t) * mask_buf.size());
+        }
         auto T_draft_set = sync_us();
         tt_draft_set += std::chrono::duration<double, std::micro>(T_draft_set - T_draft_copy).count();
 

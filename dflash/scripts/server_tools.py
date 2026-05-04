@@ -62,9 +62,14 @@ MODEL_NAME = "luce-dflash"
 
 
 def resolve_draft(root: Path) -> Path:
+    preferred = root / "draft-q8_0.gguf"
+    if preferred.is_file():
+        return preferred
+    for gguf in root.rglob("*.gguf"):
+        return gguf
     for st in root.rglob("model.safetensors"):
         return st
-    raise FileNotFoundError(f"no model.safetensors under {root}")
+    raise FileNotFoundError(f"no draft GGUF or model.safetensors under {root}")
 
 
 # ─── pydantic schemas ──────────────────────────────────────────────
@@ -1239,7 +1244,7 @@ def main():
         raise SystemExit(f"target GGUF not found at {args.target}")
     draft = resolve_draft(args.draft) if args.draft.is_dir() else args.draft
     if not draft.is_file():
-        raise SystemExit(f"draft safetensors not found at {args.draft}")
+        raise SystemExit(f"draft model not found at {args.draft}")
 
     tokenizer = AutoTokenizer.from_pretrained(args.tokenizer, trust_remote_code=True)
     stop_ids = set()

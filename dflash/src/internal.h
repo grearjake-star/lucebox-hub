@@ -175,6 +175,11 @@ struct DraftWeights {
     int head_dim  = DFLASH27B_TARGET_HEAD_DIM;         // 128
     int n_embd    = DFLASH27B_TARGET_HIDDEN;           // 5120
     int n_ff      = DFLASH27B_TARGET_INTERMEDIATE;     // 17408
+
+    // Qwen3.6 DFlash drafts use causal sliding-window attention on a subset
+    // of layers (usually [S,S,S,S,F], window 2048). Older 3.5 drafts omit this.
+    int sliding_window = 0;
+    std::vector<uint8_t> layer_is_swa;
 };
 
 bool load_draft_safetensors(const std::string & path,
@@ -186,6 +191,12 @@ bool load_draft_safetensors(const std::string & path,
 bool load_draft_gguf(const std::string & path,
                      ggml_backend_t backend,
                      DraftWeights & out);
+
+// Auto-detect by extension: .gguf uses load_draft_gguf(), everything else
+// uses the legacy safetensors loader.
+bool load_draft_model(const std::string & path,
+                      ggml_backend_t backend,
+                      DraftWeights & out);
 
 void free_draft_weights(DraftWeights & w);
 

@@ -24,6 +24,7 @@ TARGET = os.environ.get(
     str(ROOT / "models" / "Qwen3.6-27B-Q4_K_M.gguf"),
 )
 _LOCAL_DRAFT_FILE = ROOT / "models" / "draft" / "model.safetensors"
+_LOCAL_DRAFT_Q8 = ROOT / "models" / "draft" / "draft-q8_0.gguf"
 _LOCAL_DRAFT_ROOT = ROOT / "models" / "draft"
 DRAFT = None
 TEST_DFLASH = os.environ.get("DFLASH_BIN", str(ROOT / "build" / f"test_dflash{BIN_SUFFIX}"))
@@ -42,11 +43,16 @@ BENCHES = [
 ]
 
 
-def _find_safetensors(root: Path) -> str | None:
+def _find_draft_model(root: Path) -> str | None:
     if root.is_file():
         return str(root)
     if not root.is_dir():
         return None
+    preferred = root / "draft-q8_0.gguf"
+    if preferred.is_file():
+        return str(preferred)
+    for gguf in root.rglob("*.gguf"):
+        return str(gguf)
     for st in root.rglob("model.safetensors"):
         return str(st)
     return None
@@ -55,18 +61,19 @@ def _find_safetensors(root: Path) -> str | None:
 def _resolve_draft() -> str:
     env = os.environ.get("DFLASH_DRAFT")
     if env:
-        found = _find_safetensors(Path(env))
+        found = _find_draft_model(Path(env))
         if found:
             return found
-        raise FileNotFoundError(f"DFLASH_DRAFT does not point to model.safetensors: {env}")
+        raise FileNotFoundError(f"DFLASH_DRAFT does not point to a draft model: {env}")
 
-    for candidate in (_LOCAL_DRAFT_FILE, _LOCAL_DRAFT_ROOT):
-        found = _find_safetensors(candidate)
+    for candidate in (_LOCAL_DRAFT_Q8, _LOCAL_DRAFT_FILE, _LOCAL_DRAFT_ROOT):
+        found = _find_draft_model(candidate)
         if found:
             return found
 
     raise FileNotFoundError(
-        "draft model.safetensors not found. Expected one of:\n"
+        "draft GGUF/model.safetensors not found. Expected one of:\n"
+        f"  - {_LOCAL_DRAFT_Q8}\n"
         f"  - {_LOCAL_DRAFT_FILE}\n"
         "Download it as documented in the README, or set DFLASH_DRAFT to an explicit file or directory."
     )

@@ -8,7 +8,7 @@
 //   - a few representative values look reasonable (near-zero means for rms_norm output)
 //
 // Usage:
-//   smoke_draft_graph <draft.safetensors> [ctx_len]
+//   smoke_draft_graph <draft.safetensors|draft-q8_0.gguf> [ctx_len]
 //
 // ctx_len defaults to 64 to keep the first run tiny.
 
@@ -32,6 +32,10 @@
 
 using namespace dflash27b;
 
+static constexpr uint16_t F16_ZERO = 0x0000;
+static constexpr uint16_t F16_NEG_INF = 0xFC00;
+static int align_up(int x, int a) { return ((x + a - 1) / a) * a; }
+
 // Convert fp32 -> bf16 (truncation)
 static uint16_t f32_to_bf16(float f) {
     uint32_t u;
@@ -45,9 +49,30 @@ static float bf16_to_f32(uint16_t u) {
     return f;
 }
 
+static void build_draft_swa_mask(std::vector<uint16_t> & out,
+                                 int ctx_len, int q_len, int window) {
+    const int total_k = ctx_len + q_len;
+    const int q_pad = align_up(q_len, 32);
+    out.assign((size_t)total_k * q_pad, F16_NEG_INF);
+    for (int q = 0; q < q_len; ++q) {
+        const int q_pos = ctx_len + q;
+        for (int k = 0; k < total_k; ++k) {
+            bool keep = false;
+            if (k < ctx_len) {
+                keep = (q_pos - k) <= window;
+            } else {
+                keep = (k - ctx_len) <= q;
+            }
+            if (keep) {
+                out[(size_t)q * total_k + k] = F16_ZERO;
+            }
+        }
+    }
+}
+
 int main(int argc, char ** argv) {
     if (argc < 2) {
-        std::fprintf(stderr, "usage: %s <model.safetensors> [ctx_len]\n", argv[0]);
+        std::fprintf(stderr, "usage: %s <model.safetensors|draft-q8_0.gguf> [ctx_len]\n", argv[0]);
         return 2;
     }
     const char * path = argv[1];
@@ -63,11 +88,11 @@ int main(int argc, char ** argv) {
     if (!backend) { std::fprintf(stderr, "ggml_backend_cuda_init failed\n"); return 1; }
 
     DraftWeights w;
-    if (!load_draft_safetensors(path, backend, w)) {
+    if (!load_draft_model(path, backend, w)) {
         std::fprintf(stderr, "load: %s\n", dflash27b_last_error());
         return 1;
     }
-    std::printf("draft loaded\n");
+    std::printf("draft loaded sliding_window=%d\n", w.sliding_window);
 
     // ── 2. Graph context (separate from weights context)
     const size_t mem_size = 256 * 1024 * 1024;  // 256 MB — plenty for nodes
@@ -85,6 +110,7 @@ int main(int argc, char ** argv) {
     ggml_tensor * target_hid  = ggml_new_tensor_3d(gctx, GGML_TYPE_F32, fc_in, ctx_len, 1);
     ggml_tensor * pos_q       = ggml_new_tensor_1d(gctx, GGML_TYPE_I32,  q_len);
     ggml_tensor * pos_k       = ggml_new_tensor_1d(gctx, GGML_TYPE_I32,  ctx_len + q_len);
+    ggml_tensor * swa_mask    = nullptr;
     ggml_set_name(noise_embed, "noise_embed");
     ggml_set_name(target_hid,  "target_hidden_cat");
     ggml_set_name(pos_q,       "positions_q");
@@ -93,6 +119,11 @@ int main(int argc, char ** argv) {
     ggml_set_input(target_hid);
     ggml_set_input(pos_q);
     ggml_set_input(pos_k);
+    if (w.sliding_window > 0) {
+        swa_mask = ggml_new_tensor_2d(gctx, GGML_TYPE_F16, ctx_len + q_len, align_up(q_len, 32));
+        ggml_set_name(swa_mask, "draft_swa_mask");
+        ggml_set_input(swa_mask);
+    }
 
     // ── 4. Build graph
     DraftGraphInputs gi{};
@@ -101,6 +132,7 @@ int main(int argc, char ** argv) {
     gi.target_hidden_cat = target_hid;
     gi.positions_q       = pos_q;
     gi.positions_k       = pos_k;
+    gi.swa_mask          = swa_mask;
 
     DraftGraphOutputs go = build_draft_graph(gctx, w, gi);
     if (!go.hidden_states) { std::fprintf(stderr, "build_draft_graph returned null\n"); return 1; }
@@ -140,6 +172,11 @@ int main(int argc, char ** argv) {
         std::vector<int32_t> pk(ctx_len + q_len);
         for (int i = 0; i < ctx_len + q_len; i++) pk[i] = i;
         ggml_backend_tensor_set(pos_k, pk.data(), 0, sizeof(int32_t) * pk.size());
+    }
+    if (swa_mask) {
+        std::vector<uint16_t> mask;
+        build_draft_swa_mask(mask, ctx_len, q_len, w.sliding_window);
+        ggml_backend_tensor_set(swa_mask, mask.data(), 0, sizeof(uint16_t) * mask.size());
     }
 
     // ── 7. Compute

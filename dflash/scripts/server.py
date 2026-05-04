@@ -51,9 +51,14 @@ MODEL_NAME = "luce-dflash"
 
 
 def resolve_draft(root: Path) -> Path:
+    preferred = root / "draft-q8_0.gguf"
+    if preferred.is_file():
+        return preferred
+    for gguf in root.rglob("*.gguf"):
+        return gguf
     for st in root.rglob("model.safetensors"):
         return st
-    raise FileNotFoundError(f"no model.safetensors under {root}")
+    raise FileNotFoundError(f"no draft GGUF or model.safetensors under {root}")
 
 
 _QWEN35_FAMILY_TOKENIZERS = {
@@ -802,7 +807,7 @@ def main():
         raise SystemExit(f"target GGUF not found at {args.target}")
     draft = resolve_draft(args.draft) if args.draft.is_dir() else args.draft
     if not draft.is_file():
-        raise SystemExit(f"draft safetensors not found at {args.draft}")
+        raise SystemExit(f"draft model not found at {args.draft}")
 
     tokenizer_id = args.tokenizer or _tokenizer_id_from_gguf(args.target)
     tokenizer = AutoTokenizer.from_pretrained(tokenizer_id, trust_remote_code=True)
