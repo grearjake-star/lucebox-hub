@@ -854,7 +854,7 @@ static bool build_draft_step(
     ggml_set_name(sg.positions_k, "positions_k");
     ggml_set_input(sg.positions_k);
 
-    if (dw.sliding_window > 0) {
+    if (dw.sliding_window > 0 && ctx_len > dw.sliding_window) {
         const int q_pad = align_up(q_len, KQ_MASK_PAD);
         sg.attn_mask = ggml_new_tensor_2d(sg.ctx, GGML_TYPE_F16, ctx_len + q_len, q_pad);
         ggml_set_name(sg.attn_mask, "draft_swa_mask");

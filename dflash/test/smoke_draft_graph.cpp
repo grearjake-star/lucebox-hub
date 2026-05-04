@@ -119,7 +119,7 @@ int main(int argc, char ** argv) {
     ggml_set_input(target_hid);
     ggml_set_input(pos_q);
     ggml_set_input(pos_k);
-    if (w.sliding_window > 0) {
+    if (w.sliding_window > 0 && ctx_len > w.sliding_window) {
         swa_mask = ggml_new_tensor_2d(gctx, GGML_TYPE_F16, ctx_len + q_len, align_up(q_len, 32));
         ggml_set_name(swa_mask, "draft_swa_mask");
         ggml_set_input(swa_mask);

@@ -37,17 +37,21 @@ cmake --build build-luce-sm120 --target test_dflash test_generate test_flashpref
 ## Quantized DFlash Draft
 
 The runtime accepts either the original BF16 safetensors draft or a Q8_0 GGUF
-draft. For Qwen3.6, use the buun `dflash-draft-3.6-q8_0.gguf` build because
-it carries the required sliding-window metadata (`2048`, pattern `[S,S,S,S,F]`).
+draft. For Qwen3.6, build the Q8 draft from the local safetensors with
+`scripts/quantize_draft_q8.py`; it writes the required sliding-window metadata
+(`2048`, pattern `[S,S,S,S,F]`) while preserving the local draft weights.
+The runtime applies the SWA mask only when the draft context exceeds that
+window; short contexts keep the original full-attention draft path, which avoids
+unnecessary acceptance regressions on HumanEval-style prompts.
 Directory resolution prefers `draft-q8_0.gguf`, then any `.gguf`, then
 `model.safetensors`.
 
-Fetch the buun Q8 draft:
+Build the local Q8 draft:
 
 ```bash
-wget -O \
+PYTHONPATH=deps/llama.cpp/gguf-py python3 scripts/quantize_draft_q8.py \
+  /home/jake/models/Qwen3.6-27B-DFlash-safetensors/model.safetensors \
   /home/jake/models/Qwen3.6-27B-DFlash-safetensors/draft-q8_0.gguf \
-  https://huggingface.co/spiritbuun/Qwen3.6-27B-DFlash-GGUF/resolve/main/dflash-draft-3.6-q8_0.gguf
 ```
 
 Smoke-load and run a tiny draft graph:
