@@ -33,6 +33,12 @@ struct LayerWeights {
     void *ptrs[14];  // max(11 FA, 14 DN) pointers — all bf16, no scales
 };
 
+namespace dflash27b {
+namespace flashprefill {
+struct FlashPrefillScratch;
+}
+}
+
 #ifdef MEGAKERNEL_HAS_NVFP4
 struct LayerWeightsNVFP4 {
     int layer_type;
@@ -366,7 +372,8 @@ extern "C" void launch_prefill_bf16(
     void *lm_bmv, void *lm_bmi,
     void *fa_q_tail,
     int max_seq_len, int q_tail_len,
-    cudaStream_t stream);
+    cudaStream_t stream,
+    dflash27b::flashprefill::FlashPrefillScratch *flashprefill_scratch);
 
 extern "C" void launch_mega_pflash_score(
     const void *q_tail,
@@ -418,7 +425,8 @@ void prefill_bf16(
         lm_bmv.data_ptr(), lm_bmi.data_ptr(),
         nullptr,
         (int)max_seq_len, 0,
-        c10::cuda::getCurrentCUDAStream().stream());
+        c10::cuda::getCurrentCUDAStream().stream(),
+        nullptr);
 }
 
 void prefill_bf16_qtail(
@@ -458,7 +466,8 @@ void prefill_bf16_qtail(
         lm_bmv.data_ptr(), lm_bmi.data_ptr(),
         fa_q_tail.data_ptr(),
         (int)max_seq_len, (int)q_tail_len,
-        c10::cuda::getCurrentCUDAStream().stream());
+        c10::cuda::getCurrentCUDAStream().stream(),
+        nullptr);
 }
 
 void mega_pflash_score(

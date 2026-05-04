@@ -31,7 +31,9 @@
 
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
+#include <cuda_runtime_api.h>
 #include "ggml-backend.h"
 
 namespace dflash27b {
@@ -46,18 +48,39 @@ struct FlashPrefillConfig {
     float alpha            = 0.12f; // dynamic top-K threshold (score >= max_score * alpha)
 };
 
+struct FlashPrefillScratch {
+    void * mean_k = nullptr;
+    float * score = nullptr;
+    float * score_max = nullptr;
+    int32_t * indices = nullptr;
+    int32_t * counts = nullptr;
+    size_t mean_k_bytes = 0;
+    size_t score_bytes = 0;
+    size_t score_max_bytes = 0;
+    size_t indices_bytes = 0;
+    size_t counts_bytes = 0;
+};
+
+void free_flash_prefill_scratch(FlashPrefillScratch & scratch);
+
 // Runs the full FP forward (mean_K → block_score → block_select → sparse_fwd).
 // Returns 0 on success, non-zero on failure (allocator OOM, bad shape, etc.).
 // Output O is written in place.
-//
-// Scratch memory (allocated/freed per call inside): default ~M*M*H*4 * 3 +
-// M*H*4 where M = ceil(seq_len/block_size). At S=140K, M≈1093, H=16:
-// ~300 MB. DFLASH_FP_FUSED_SELECT=1 skips the float score/max scratch.
 int flash_prefill_forward_bf16(
     const void * Q, const void * K, const void * V, void * O,
     int batch, int seq_len, int n_q_heads, int n_k_heads, int head_dim,
     float scale,
     const FlashPrefillConfig & cfg);
+
+// Same forward path, but reuses caller-owned scratch. This avoids runtime
+// allocator spikes in long-lived native Mega PFlash contexts.
+int flash_prefill_forward_bf16_with_scratch(
+    const void * Q, const void * K, const void * V, void * O,
+    int batch, int seq_len, int n_q_heads, int n_k_heads, int head_dim,
+    float scale,
+    const FlashPrefillConfig & cfg,
+    FlashPrefillScratch * scratch,
+    cudaStream_t stream);
 
 // ggml flash_attn_ext-based implementation. Works on all SM targets (75+).
 // Same interface as flash_prefill_forward_bf16 but uses ggml's FA internally

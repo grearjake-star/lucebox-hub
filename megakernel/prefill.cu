@@ -1170,7 +1170,8 @@ static bool pf_flashprefill_bsa_attn(
     half_t *pack_buf,
     half_t *out,
     int S,
-    cudaStream_t stream)
+    cudaStream_t stream,
+    dflash27b::flashprefill::FlashPrefillScratch *scratch)
 {
     if (S <= 0) return false;
     half_t *q_pack = pack_buf;
@@ -1186,11 +1187,11 @@ static bool pf_flashprefill_bsa_attn(
         float v = (float)std::atof(a);
         if (v > 0.0f && v < 1.0f) cfg.alpha = v;
     }
-    int rc = dflash27b::flashprefill::flash_prefill_forward_bf16(
+    int rc = dflash27b::flashprefill::flash_prefill_forward_bf16_with_scratch(
         q_pack, k_pack, v_pack, out,
         1, S, FA_Q_HEADS, FA_KV_HEADS, FA_HEAD_DIM,
         1.0f / sqrtf((float)FA_HEAD_DIM),
-        cfg);
+        cfg, scratch, stream);
     if (rc != 0) return false;
     pf_apply_fa_gate_inplace<<<(S * FA_Q_SIZE + 255) / 256, 256, 0, stream>>>(
         qkv_fused, out, S);
@@ -1701,7 +1702,8 @@ extern "C" void launch_prefill_bf16(
     half_t *fa_q_tail,
     int max_seq_len,
     int q_tail_len,
-    cudaStream_t stream)
+    cudaStream_t stream,
+    dflash27b::flashprefill::FlashPrefillScratch *flashprefill_scratch)
 {
     static cublasHandle_t cublas = nullptr;
     if (!cublas) cublasCreate(&cublas);
@@ -1893,7 +1895,8 @@ extern "C" void launch_prefill_bf16(
                     proj_buf2,
                     dn_out_buf,
                     S,
-                    stream);
+                    stream,
+                    flashprefill_scratch);
             }
 #endif
             if (!used_bsa_attn) {

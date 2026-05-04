@@ -383,7 +383,8 @@ extern "C" void launch_prefill_bf16(
     void *lm_bmv, void *lm_bmi,
     void *fa_q_tail,
     int max_seq_len, int q_tail_len,
-    cudaStream_t stream);
+    cudaStream_t stream,
+    dflash27b::flashprefill::FlashPrefillScratch *flashprefill_scratch);
 
 extern "C" void launch_mega_pflash_score(
     const void *q_tail,
@@ -589,6 +590,7 @@ void free_mega_pflash(MegaPFlashContext & ctx) {
 #ifdef DFLASH27B_HAVE_BSA
     flashprefill::dflash_bsa_free_persistent();
 #endif
+    flashprefill::free_flash_prefill_scratch(ctx.flashprefill_scratch);
     ctx = MegaPFlashContext{};
 }
 
@@ -648,7 +650,8 @@ std::vector<int32_t> mega_pflash_score_and_compress(
         ctx.lm_bmv, ctx.lm_bmi,
         ctx.fa_q_tail,
         ctx.max_seq_len, tail_len,
-        stream);
+        stream,
+        &ctx.flashprefill_scratch);
     launch_mega_pflash_score(
         ctx.fa_q_tail, ctx.fa_k_cache, logit_scratch,
         token_scores, chunk_scores,

@@ -91,13 +91,43 @@ void block_select_host(
 
 namespace {
 inline int cdiv(int a, int b) { return (a + b - 1) / b; }
+
+void free_ptr(void *p) {
+    if (p) cudaFree(p);
 }
 
-int flash_prefill_forward_bf16(
+bool grow_ptr(void **ptr, size_t &capacity, size_t bytes, const char *name) {
+    if (capacity >= bytes) return true;
+    if (*ptr) cudaFree(*ptr);
+    *ptr = nullptr;
+    capacity = 0;
+    cudaError_t e = cudaMalloc(ptr, bytes);
+    if (e != cudaSuccess) {
+        std::fprintf(stderr, "[flashprefill] cudaMalloc failed for %s: %s\n",
+                     name, cudaGetErrorString(e));
+        return false;
+    }
+    capacity = bytes;
+    return true;
+}
+}
+
+void free_flash_prefill_scratch(FlashPrefillScratch & scratch) {
+    free_ptr(scratch.mean_k);
+    free_ptr(scratch.score);
+    free_ptr(scratch.score_max);
+    free_ptr(scratch.indices);
+    free_ptr(scratch.counts);
+    scratch = FlashPrefillScratch{};
+}
+
+int flash_prefill_forward_bf16_with_scratch(
     const void * Q, const void * K, const void * V, void * O,
     int batch, int seq_len, int n_q_heads, int n_k_heads, int head_dim,
     float scale,
-    const FlashPrefillConfig & cfg)
+    const FlashPrefillConfig & cfg,
+    FlashPrefillScratch * scratch,
+    cudaStream_t stream)
 {
     const int B = batch;
     const int S = seq_len;
@@ -117,18 +147,27 @@ int flash_prefill_forward_bf16(
     int s_idx_b = M * N * H, s_idx_m = N * H, s_idx_n = H, s_idx_h = 1;
     int s_cnt_b = M * H, s_cnt_m = H, s_cnt_h = 1;
 
-    // Allocate scratch on the same device as Q.
-    void * dmK = nullptr;
-    float * dS = nullptr, * dM = nullptr;
-    int32_t * dIdx = nullptr, * dCnt = nullptr;
     const char *forward_backend = "wmma";
-    cudaError_t e;
-    static const bool fused_select = (std::getenv("DFLASH_FP_FUSED_SELECT") != nullptr);
-    if ((e = cudaMalloc(&dmK,  (size_t)B * M * Hk * D * 2)) != cudaSuccess) goto err;  // bf16
-    if (!fused_select && (e = cudaMalloc(&dS, (size_t)B * M * N * H * sizeof(float))) != cudaSuccess) goto err;
-    if (!fused_select && (e = cudaMalloc(&dM, (size_t)B * M * N * H * sizeof(float))) != cudaSuccess) goto err;
-    if ((e = cudaMalloc(&dIdx, (size_t)B * M * N * H * sizeof(int32_t))) != cudaSuccess) goto err;
-    if ((e = cudaMalloc(&dCnt, (size_t)B * M * H * sizeof(int32_t))) != cudaSuccess) goto err;
+    const bool fused_select = (std::getenv("DFLASH_FP_FUSED_SELECT") != nullptr);
+    FlashPrefillScratch local_scratch;
+    FlashPrefillScratch &sc = scratch ? *scratch : local_scratch;
+    if (!grow_ptr(&sc.mean_k, sc.mean_k_bytes, (size_t)B * M * Hk * D * 2, "mean_k") ||
+        (!fused_select && !grow_ptr((void **)&sc.score, sc.score_bytes,
+                                    (size_t)B * M * N * H * sizeof(float), "score")) ||
+        (!fused_select && !grow_ptr((void **)&sc.score_max, sc.score_max_bytes,
+                                    (size_t)B * M * N * H * sizeof(float), "score_max")) ||
+        !grow_ptr((void **)&sc.indices, sc.indices_bytes,
+                  (size_t)B * M * N * H * sizeof(int32_t), "indices") ||
+        !grow_ptr((void **)&sc.counts, sc.counts_bytes,
+                  (size_t)B * M * H * sizeof(int32_t), "counts")) {
+        if (!scratch) free_flash_prefill_scratch(local_scratch);
+        return -1;
+    }
+    void * dmK = sc.mean_k;
+    float * dS = sc.score;
+    float * dM = sc.score_max;
+    int32_t * dIdx = sc.indices;
+    int32_t * dCnt = sc.counts;
 
     static const bool prof = (std::getenv("DFLASH_FP_PROFILE") != nullptr);
     cudaEvent_t pE[5];
@@ -138,7 +177,7 @@ int flash_prefill_forward_bf16(
     launch_compute_mean_vector_bf16(
         K, dmK, B, S, Hk, D, BLOCK,
         s_K_b, s_K_n, s_K_h, s_K_d,
-        s_mK_b, s_mK_m, s_mK_h, s_mK_d, 0);
+        s_mK_b, s_mK_m, s_mK_h, s_mK_d, stream);
 
     if (prof) cudaEventRecord(pE[1]);
     if (fused_select) {
@@ -152,7 +191,7 @@ int flash_prefill_forward_bf16(
             s_mK_b, s_mK_m, s_mK_h, s_mK_d,
             s_idx_b, s_idx_m, s_idx_n, s_idx_h,
             s_cnt_b, s_cnt_m, s_cnt_h,
-            dIdx, dCnt, 0);
+            dIdx, dCnt, stream);
         if (prof) cudaEventRecord(pE[2]);
     } else {
         // 2. block scores
@@ -162,7 +201,7 @@ int flash_prefill_forward_bf16(
             s_Q_b, s_Q_n, s_Q_h, s_Q_d,
             s_mK_b, s_mK_m, s_mK_h, s_mK_d,
             s_S_b, s_S_m, s_S_n, s_S_h,
-            s_S_b, s_S_m, s_S_n, s_S_h, 0);
+            s_S_b, s_S_m, s_S_n, s_S_h, stream);
 
         if (prof) cudaEventRecord(pE[2]);
         // 3. block_select on GPU.
@@ -172,7 +211,7 @@ int flash_prefill_forward_bf16(
             s_S_b, s_S_m, s_S_n, s_S_h,
             s_idx_b, s_idx_m, s_idx_n, s_idx_h,
             s_cnt_b, s_cnt_m, s_cnt_h,
-            dIdx, dCnt, 0);
+            dIdx, dCnt, stream);
     }
 
     if (prof) cudaEventRecord(pE[3]);
@@ -194,14 +233,14 @@ int flash_prefill_forward_bf16(
             Q, K, V, O, dIdx, dCnt, scale,
             B, H, Hk, S, D, BLOCK,
             s_idx_b, s_idx_m, s_idx_n, s_idx_h,
-            s_cnt_b, s_cnt_m, s_cnt_h, 0);
+            s_cnt_b, s_cnt_m, s_cnt_h, stream);
     } else if (use_bsa && D == 256 && BLOCK == 128) {
         forward_backend = "bsa";
         launch_bsa_sparse_flash_forward_bf16(
             Q, K, V, O, dIdx, dCnt, scale,
             B, H, Hk, S, D, BLOCK,
             s_idx_b, s_idx_m, s_idx_n, s_idx_h,
-            s_cnt_b, s_cnt_m, s_cnt_h, 0);
+            s_cnt_b, s_cnt_m, s_cnt_h, stream);
     } else
 #endif
     {
@@ -213,7 +252,7 @@ int flash_prefill_forward_bf16(
             s_K_b, s_K_n, s_K_h, s_K_d,    // V uses K strides
             s_Q_b, s_Q_n, s_Q_h, s_Q_d,    // O uses Q strides
             s_idx_b, s_idx_m, s_idx_n, s_idx_h,
-            s_cnt_b, s_cnt_m, s_cnt_h, 0);
+            s_cnt_b, s_cnt_m, s_cnt_h, stream);
     }
 
     if (prof) {
@@ -229,17 +268,19 @@ int flash_prefill_forward_bf16(
             S, n_q_heads, n_k_heads, forward_backend, t1, fused_select ? "+select" : "", t2, t3, t4);
         for (int i=0;i<5;i++) cudaEventDestroy(pE[i]);
     }
-    cudaFree(dmK); cudaFree(dS); cudaFree(dM); cudaFree(dIdx); cudaFree(dCnt);
+    if (!scratch) free_flash_prefill_scratch(local_scratch);
     return 0;
+}
 
-err:
-    if (dmK)  cudaFree(dmK);
-    if (dS)   cudaFree(dS);
-    if (dM)   cudaFree(dM);
-    if (dIdx) cudaFree(dIdx);
-    if (dCnt) cudaFree(dCnt);
-    std::fprintf(stderr, "[flashprefill] cudaMalloc failed: %s\n", cudaGetErrorString(e));
-    return -1;
+int flash_prefill_forward_bf16(
+    const void * Q, const void * K, const void * V, void * O,
+    int batch, int seq_len, int n_q_heads, int n_k_heads, int head_dim,
+    float scale,
+    const FlashPrefillConfig & cfg)
+{
+    return flash_prefill_forward_bf16_with_scratch(
+        Q, K, V, O, batch, seq_len, n_q_heads, n_k_heads, head_dim,
+        scale, cfg, nullptr, 0);
 }
 
 } // namespace flashprefill

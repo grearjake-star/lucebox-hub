@@ -10,6 +10,8 @@
 #include <string>
 #include <vector>
 
+#include "flashprefill.h"
+
 namespace dflash27b {
 
 struct MegaPFlashContext {
@@ -54,6 +56,7 @@ struct MegaPFlashContext {
     size_t score_logit_bytes = 0;
     size_t score_token_bytes = 0;
     size_t score_chunk_bytes = 0;
+    flashprefill::FlashPrefillScratch flashprefill_scratch;
     bool loaded = false;
 };
 
