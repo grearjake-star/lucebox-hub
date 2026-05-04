@@ -41,7 +41,6 @@ constexpr int INTER = 3584;
 constexpr int VOCAB = 248320;
 constexpr int NUM_LAYERS = 24;
 constexpr float RMS_EPS = 1e-6f;
-constexpr int MAX_SEQ = 2048;
 
 constexpr int FA_Q_HEADS = 8;
 constexpr int FA_KV_HEADS = 2;
@@ -604,9 +603,10 @@ __device__ void phase_qk_norm_rope(
     __nv_bfloat16 *k,               // [S, FA_KV_SIZE]    (in-place)
     const __nv_bfloat16 *v,          // [S, FA_KV_SIZE]
     const __nv_bfloat16 *qnw, const __nv_bfloat16 *knw,
-    __nv_bfloat16 *k_cache,          // [FA_KV_HEADS, MAX_SEQ, FA_HEAD_DIM]
+    __nv_bfloat16 *k_cache,          // [FA_KV_HEADS, max_seq_len, FA_HEAD_DIM]
     __nv_bfloat16 *v_cache,
-    int S)
+    int S,
+    int max_seq_len)
 {
     int warps_per_block = blockDim.x / 32;
     int global_warp = blockIdx.x * warps_per_block + (threadIdx.x / 32);
@@ -648,8 +648,8 @@ __device__ void phase_qk_norm_rope(
             int pos = kidx / FA_KV_HEADS, head = kidx - pos * FA_KV_HEADS;
             __nv_bfloat16 *kh = k + pos * FA_KV_SIZE + head * FA_HEAD_DIM;
             const __nv_bfloat16 *vh = v + pos * FA_KV_SIZE + head * FA_HEAD_DIM;
-            __nv_bfloat16 *kc = k_cache + head * MAX_SEQ * FA_HEAD_DIM + pos * FA_HEAD_DIM;
-            __nv_bfloat16 *vc = v_cache + head * MAX_SEQ * FA_HEAD_DIM + pos * FA_HEAD_DIM;
+            __nv_bfloat16 *kc = k_cache + head * max_seq_len * FA_HEAD_DIM + pos * FA_HEAD_DIM;
+            __nv_bfloat16 *vc = v_cache + head * max_seq_len * FA_HEAD_DIM + pos * FA_HEAD_DIM;
             float ss = 0;
             for (int i = lid; i < FA_HEAD_DIM; i += 32) {
                 float v = __bfloat162float(kh[i]); ss += v * v;
@@ -846,7 +846,7 @@ __device__ void phase_lm_reduce(const float *block_max_vals,
 // ==========================================================================
 __global__ void __launch_bounds__(MEGA_BLOCK_SIZE, 1)
 prefill_megakernel(
-    const int *token_ids, int S, int *output_token,
+    const int *token_ids, int S, int max_seq_len, int *output_token,
     const __nv_bfloat16 *embed_weight, const MegaLayerWeights *layers,
     const __nv_bfloat16 *final_norm_w, const __nv_bfloat16 *lm_head_w,
     __nv_bfloat16 *fa_k_cache, __nv_bfloat16 *fa_v_cache,
@@ -867,7 +867,7 @@ prefill_megakernel(
     // causal attn, final norm), which use S directly.
     int S_pad = ((S + BTM - 1) / BTM) * BTM;
 
-    int fa_stride = FA_KV_HEADS * MAX_SEQ * FA_HEAD_DIM;
+    int fa_stride = FA_KV_HEADS * max_seq_len * FA_HEAD_DIM;
     int dn_stride = DN_HEADS * DN_KEY * DN_VAL;
 
     // Phase 0: Embedding for real tokens; zero-fill padding rows so matmuls
@@ -962,7 +962,7 @@ prefill_megakernel(
 
             phase_qk_norm_rope(proj_buf, proj_buf2, attn_buf, q_nw, k_nw,
                                fa_k_cache + fa_idx * fa_stride,
-                               fa_v_cache + fa_idx * fa_stride, S);
+                               fa_v_cache + fa_idx * fa_stride, S, max_seq_len);
             grid.sync();
 
             phase_causal_attn(proj_buf, proj_buf2, attn_buf, dn_out_buf, S);
@@ -1029,7 +1029,7 @@ static int mega_launch_blocks() {
 }
 
 extern "C" void launch_prefill_bf16_mega(
-    const int *token_ids, int seq_len, int *output_token,
+    const int *token_ids, int seq_len, int max_seq_len, int *output_token,
     const __nv_bfloat16 *embed_weight, const MegaLayerWeights *layers,
     const __nv_bfloat16 *final_norm_w, const __nv_bfloat16 *lm_head_w,
     __nv_bfloat16 *fa_k_cache, __nv_bfloat16 *fa_v_cache,
@@ -1048,6 +1048,7 @@ extern "C" void launch_prefill_bf16_mega(
 
     const int *token_ids_arg = token_ids;
     int seq_len_arg = seq_len;
+    int max_seq_len_arg = max_seq_len;
     int *output_token_arg = output_token;
     const __nv_bfloat16 *embed_arg = embed_weight;
     const MegaLayerWeights *layers_arg = layers;
@@ -1064,7 +1065,7 @@ extern "C" void launch_prefill_bf16_mega(
     float *lv = lm_bmv; int *li_ = lm_bmi;
 
     void *args[] = {
-        (void *)&token_ids_arg, (void *)&seq_len_arg, (void *)&output_token_arg,
+        (void *)&token_ids_arg, (void *)&seq_len_arg, (void *)&max_seq_len_arg, (void *)&output_token_arg,
         (void *)&embed_arg, (void *)&layers_arg,
         (void *)&fn_arg, (void *)&lm_arg,
         (void *)&fk_arg, (void *)&fv_arg,

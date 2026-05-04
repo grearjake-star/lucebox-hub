@@ -500,7 +500,7 @@ void mega_pflash_score(
 
 #ifdef MEGAKERNEL_HAS_NVFP4
 extern "C" void launch_prefill_bf16_mega(
-    const int *token_ids, int seq_len, int *output_token,
+    const int *token_ids, int seq_len, int max_seq_len, int *output_token,
     const void *embed_weight, const LayerWeights *layers,
     const void *final_norm_w, const void *lm_head_w,
     void *fa_k_cache, void *fa_v_cache, void *dn_states, void *conv_bufs,
@@ -525,7 +525,7 @@ void prefill_bf16_mega(
     torch::Tensor lm_bmv, torch::Tensor lm_bmi)
 {
     launch_prefill_bf16_mega(
-        (const int*)token_ids.data_ptr(), token_ids.size(0),
+        (const int*)token_ids.data_ptr(), token_ids.size(0), fa_k_cache.size(1),
         (int*)output_token.data_ptr(),
         embed_weight.data_ptr(),
         reinterpret_cast<const LayerWeights*>(layer_weights_packed.data_ptr()),
